@@ -1,0 +1,8 @@
+{
+	"appId": "com.routesafe.ai",
+	"appName": "RouteSafe AI",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https"
+	}
+}

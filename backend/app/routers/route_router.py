@@ -66,7 +66,8 @@ async def get_safe_routes(req: RouteRequest):
 
     profiles = []
     districts_by_route = {}
-    for idx, route in enumerate(raw_routes):
+
+    async def score_one_route(idx, route):
         sampled_points = routing_service.sample_route_points(route["geometry"], every_n=8)
         segment_risks, districts_touched = await _score_segments(
             sampled_points, route["duration_s"], crime_grid
@@ -79,8 +80,17 @@ async def get_safe_routes(req: RouteRequest):
             mode=req.mode,
             weights=weights,
         )
-        profiles.append((profile, route["geometry"]))
-        districts_by_route[idx] = sorted(districts_touched)
+        return idx, profile, route["geometry"], sorted(districts_touched)
+
+    # Score every candidate route CONCURRENTLY rather than one after another —
+    # with 3 routes this cuts total latency roughly 3x, which matters a lot
+    # on slower networks (e.g. free-tier hosting) where each route's AQI
+    # lookups can otherwise stack up sequentially and blow past client-side
+    # request timeouts.
+    scored = await asyncio.gather(*[score_one_route(idx, route) for idx, route in enumerate(raw_routes)])
+    for idx, profile, geometry, districts in scored:
+        profiles.append((profile, geometry))
+        districts_by_route[idx] = districts
 
     # 4. Rank
     if req.ranking == "pareto":
@@ -119,13 +129,22 @@ async def get_safe_routes(req: RouteRequest):
 async def _score_segments(sampled_points, total_duration_s, crime_grid):
     """
     For each sampled point along a route, fetch/estimate AQI and crime risk.
-    AQI calls are made concurrently to keep latency reasonable.
+    AQI calls run concurrently, each with a short hard timeout — if a
+    particular station is slow to respond, that one point falls back to the
+    neutral AQI value quickly rather than stalling the entire route's score
+    (and, with several routes scored concurrently, the whole request).
     """
+    AQI_CALL_TIMEOUT_S = 8
+
+    async def bounded_aqi_call(lat, lon):
+        try:
+            return await asyncio.wait_for(aqi_service.get_aqi_for_point(lat, lon), timeout=AQI_CALL_TIMEOUT_S)
+        except Exception as e:
+            return e
+
     n_points = len(sampled_points)
-    aqi_tasks = [
-        aqi_service.get_aqi_for_point(lat, lon) for lat, lon in sampled_points
-    ]
-    aqi_results = await asyncio.gather(*aqi_tasks, return_exceptions=True)
+    aqi_tasks = [bounded_aqi_call(lat, lon) for lat, lon in sampled_points]
+    aqi_results = await asyncio.gather(*aqi_tasks)
 
     segment_risks = []
     districts_touched = set()

@@ -1,8 +1,115 @@
-import React, { useState } from "react";
+// Author: Devanandh S
+// Reg No: 24MID0296
+
+import React, { useEffect, useRef, useState } from "react";
+import { searchPlaces } from "../api";
+import { Mic, Search } from 'lucide-react';
 
 function fmt(point) {
   if (!point) return "Not set";
   return `${point[0].toFixed(5)}, ${point[1].toFixed(5)}`;
+}
+
+function PlaceSearchInput({ label, kind, onSelect }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef(null);
+
+  useEffect(() => {
+    const text = query.trim();
+    if (text.length < 2) {
+      setResults([]);
+      return undefined;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const data = await searchPlaces(text);
+        if (!cancelled) setResults(Array.isArray(data) ? data : data.results || []);
+      } catch (e) {
+        if (!cancelled) setResults([]);
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
+
+  function selectPlace(place) {
+    const lat = Number(place.lat);
+    const lon = Number(place.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    onSelect(kind, lat, lon);
+    setQuery(place.display_name || place.name || "");
+    setResults([]);
+  }
+
+  function startVoiceSearch() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Voice search is not supported in this browser. Please use Google Chrome.");
+      return;
+    }
+    if (recognitionRef.current) recognitionRef.current.stop();
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-IN";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.onstart = () => setListening(true);
+    recognition.onresult = (event) => setQuery(event.results[0][0].transcript);
+    recognition.onerror = (event) => {
+      console.error("Voice search error:", event.error);
+      setListening(false);
+      if (event.error !== "aborted") alert("Voice recognition error: " + event.error);
+    };
+    recognition.onend = () => {
+      recognitionRef.current = null;
+      setListening(false);
+    };
+    recognitionRef.current = recognition;
+    recognition.start();
+  }
+
+  return (
+    <div className="place-search">
+      <div className="place-search-label">{label}</div>
+      <div className="search-input-container">
+        <Search className="search-icon" size={18} />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={`Search ${label.toLowerCase()} location...`}
+          autoComplete="off"
+          className="custom-search-input"
+        />
+        <button 
+          type="button" 
+          className={`voice-search-btn ${listening ? 'active' : ''}`} 
+          onClick={startVoiceSearch} 
+          title="Voice search"
+        >
+          <Mic size={18} />
+        </button>
+      </div>
+      {searching && <div className="place-search-status">Searching places…</div>}
+      {results.length > 0 && (
+        <div className="place-search-results">
+          {results.map((place, index) => (
+            <button type="button" key={`${place.place_id || index}`} className="place-search-result" onClick={() => selectPlace(place)}>
+              <strong>{place.name || place.display_name}</strong>
+              {place.name && place.display_name && <span>{place.display_name}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function SearchPanel({
@@ -46,9 +153,15 @@ export default function SearchPanel({
 
   const canSearch = startPoint && endPoint && !loading;
 
+  function handlePlaceSelect(kind, lat, lon) {
+    onManualSet(kind, lat, lon);
+  }
+
   return (
     <form className="search-panel" onSubmit={handleSubmit}>
       <h2>Plan a Safe Route</h2>
+
+      <PlaceSearchInput label="Start" kind="start" onSelect={handlePlaceSelect} />
 
       {/* Start */}
       <div className="location-field">
@@ -109,6 +222,7 @@ export default function SearchPanel({
       </button>
 
       {/* Destination */}
+      <PlaceSearchInput label="Destination" kind="destination" onSelect={handlePlaceSelect} />
       <div className="location-field">
         <div className="location-field-label">
           <span className="pin-dot pin-destination" /> Destination

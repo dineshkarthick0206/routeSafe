@@ -70,15 +70,23 @@ async def get_routes(start_lat, start_lon, end_lat, end_lon, waypoints=None):
     return routes[: settings.NUM_ROUTE_ALTERNATIVES]
 
 
-def sample_route_points(geometry: list[tuple[float, float]], every_n: int = 5):
+MAX_SAMPLE_POINTS = 15  # hard ceiling regardless of route length
+
+
+def sample_route_points(geometry: list[tuple[float, float]], every_n: int = 8,
+                        max_points: int = MAX_SAMPLE_POINTS):
     """
-    Downsample a route's polyline so we don't query AQI/crime/traffic for
-    every single GPS point (which could be hundreds). We sample every Nth
-    point plus always include the first and last.
+    Downsample a route polyline. Takes every Nth point, then, if that still
+    exceeds `max_points` (long routes like Coimbatore -> Salem have thousands
+    of polyline points), picks evenly spaced points so the count never
+    exceeds the cap. First and last points are always included.
     """
-    if len(geometry) <= every_n:
-        return geometry
-    sampled = geometry[::every_n]
-    if geometry[-1] not in sampled:
+    if len(geometry) <= 2:
+        return list(geometry)
+    sampled = list(geometry[::every_n])
+    if sampled[-1] != geometry[-1]:
         sampled.append(geometry[-1])
+    if len(sampled) > max_points:
+        step = (len(sampled) - 1) / (max_points - 1)
+        sampled = [sampled[round(k * step)] for k in range(max_points)]
     return sampled

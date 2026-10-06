@@ -26,16 +26,10 @@ class Settings:
     # How many candidate routes to request from the routing engine
     NUM_ROUTE_ALTERNATIVES: int = 3
 
-    # CORS - update with your deployed frontend URL in production.
-    # The capacitor:// and https://localhost entries are the origins
-    # Capacitor's native WebView sends on iOS and Android respectively —
-    # needed once you package this as a mobile app, in addition to your
-    # regular deployed website URL.
+    # CORS - update with your deployed frontend URL in production
     ALLOWED_ORIGINS: list[str] = [
         "http://localhost:5173",   # local Vite dev server
         "http://localhost:3000",
-        "capacitor://localhost",   # iOS app (Capacitor)
-        "https://localhost",       # Android app (Capacitor, androidScheme: "https")
         "*",  # tighten this before going to production
     ]
 

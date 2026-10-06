@@ -6,6 +6,7 @@ import KpiBar from "./components/KpiBar";
 import TimeSlider from "./components/TimeSlider";
 import MapLegend from "./components/MapLegend";
 import useLiveLocation from "./hooks/useLiveLocation";
+import useVoiceNavigation from "./hooks/useVoiceNavigation";
 import { distanceToPolylineMeters } from "./utils/geo";
 import { getSafeRoutes, getCrimeHeatmap } from "./api";
 
@@ -38,6 +39,7 @@ export default function App() {
   const [locatingOnce, setLocatingOnce] = useState(false);
   const [liveTracking, setLiveTracking] = useState(false);
   const [driftedOffRoute, setDriftedOffRoute] = useState(false);
+  const [voiceNavigation, setVoiceNavigation] = useState(false);
 
   // --- Crime map layers -----------------------------------------------
   const [month, setMonth] = useState(0); // 0 = all months
@@ -177,7 +179,15 @@ export default function App() {
       setRoutes(data.routes);
       setDriftedOffRoute(false);
     } catch (e) {
-      setError("Something went wrong while fetching routes. Check that the backend is running.");
+      if (e.code === "ECONNABORTED") {
+        setError("The request timed out. Long routes can take a while - the server may be waking up. Please try again in a moment.");
+      } else if (e.response?.status === 504) {
+        setError(e.response.data?.detail || "Route analysis timed out. Please try again.");
+      } else if (e.response) {
+        setError(`Server error (${e.response.status}): ${e.response.data?.detail || "please try again."}`);
+      } else {
+        setError("Can't reach the backend. Check your internet connection or that the server is running.");
+      }
       setRoutes([]);
     } finally {
       setLoading(false);
@@ -189,6 +199,33 @@ export default function App() {
   }
 
   const topRoute = routes.length > 0 ? routes[0] : null;
+
+  const voice = useVoiceNavigation({
+    enabled: voiceNavigation,
+    position: live.position,
+    route: topRoute,
+    destination: endPoint,
+  });
+
+  function handleToggleVoiceNavigation() {
+    if (!voice.supported) {
+      setError("Voice navigation is not supported in this browser. Please use Chrome or Edge.");
+      return;
+    }
+
+    if (!liveTracking) {
+      setError("Turn on Live tracking first to use voice navigation.");
+      return;
+    }
+
+    if (!topRoute) {
+      setError("Find a route first, then start voice navigation.");
+      return;
+    }
+
+    setError(null);
+    setVoiceNavigation((current) => !current);
+  }
 
   return (
     <div className="app-shell">
@@ -233,6 +270,20 @@ export default function App() {
 
           {live.error && liveTracking && <div className="error-banner">{live.error}</div>}
           {error && <div className="error-banner">{error}</div>}
+
+          <div className="voice-navigation-panel">
+            <div>
+              <strong>🔊 Voice Navigation</strong>
+              <p>{voice.status}</p>
+            </div>
+            <button
+              type="button"
+              className={voiceNavigation ? "voice-nav-btn active" : "voice-nav-btn"}
+              onClick={handleToggleVoiceNavigation}
+            >
+              {voiceNavigation ? "Stop Voice" : "Start Voice"}
+            </button>
+          </div>
 
           <RouteCards routes={routes} />
         </aside>

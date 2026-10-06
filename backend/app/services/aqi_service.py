@@ -5,11 +5,41 @@ OpenAQ docs: https://docs.openaq.org/using-the-api/quick-start
 Sign up for a free API key at https://explore.openaq.org/ (account settings -> API keys).
 """
 
+import asyncio
+import time
 import httpx
 from app.config import settings
 from app.http_client import get_client
 
 OPENAQ_BASE_URL = "https://api.openaq.org/v3"
+
+# OpenAQ's free tier allows ~60 requests/min: cap concurrent calls.
+_OPENAQ_SEMAPHORE = asyncio.Semaphore(8)
+
+# Caches: stations by ~11km grid cell (lat/lon rounded to 1 decimal), latest
+# measurements by station id. Neighbouring route points and repeat searches
+# then cost zero extra API calls.
+_STATION_CACHE: dict = {}
+_MEASURE_CACHE: dict = {}
+STATION_TTL_S = 24 * 3600
+MEASURE_TTL_S = 10 * 60
+
+
+_INFLIGHT: dict = {}
+
+
+async def _dedupe(key, factory):
+    """Concurrent callers asking for the same key share one in-flight request."""
+    task = _INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.ensure_future(factory())
+        _INFLIGHT[key] = task
+        task.add_done_callback(lambda _t: _INFLIGHT.pop(key, None))
+    return await task
+
+
+def _fresh(entry, ttl):
+    return entry is not None and (time.monotonic() - entry[0]) < ttl
 
 
 async def get_nearby_stations(lat: float, lon: float, radius_m: int = 15000):
@@ -25,20 +55,37 @@ async def get_nearby_stations(lat: float, lon: float, radius_m: int = 15000):
         "limit": 10,
         "order_by": "id",
     }
-    client = get_client()
-    resp = await client.get(url, headers=headers, params=params)
-    resp.raise_for_status()
-    return resp.json().get("results", [])
+    key = (round(lat, 1), round(lon, 1), radius_m)
+    cached = _STATION_CACHE.get(key)
+    if _fresh(cached, STATION_TTL_S):
+        return cached[1]
+    async def _fetch():
+        async with _OPENAQ_SEMAPHORE:
+            resp = await get_client().get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+        _STATION_CACHE[key] = (time.monotonic(), results)
+        return results
+
+    return await _dedupe(("st", key), _fetch)
 
 
 async def get_latest_measurement(location_id: int):
     """Get the most recent sensor readings for a specific station."""
     url = f"{OPENAQ_BASE_URL}/locations/{location_id}/latest"
     headers = {"X-API-Key": settings.OPENAQ_API_KEY}
-    client = get_client()
-    resp = await client.get(url, headers=headers)
-    resp.raise_for_status()
-    return resp.json().get("results", [])
+    cached = _MEASURE_CACHE.get(location_id)
+    if _fresh(cached, MEASURE_TTL_S):
+        return cached[1]
+    async def _fetch():
+        async with _OPENAQ_SEMAPHORE:
+            resp = await get_client().get(url, headers=headers)
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+        _MEASURE_CACHE[location_id] = (time.monotonic(), results)
+        return results
+
+    return await _dedupe(("m", location_id), _fetch)
 
 
 def pm25_to_aqi(pm25: float) -> int:

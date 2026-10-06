@@ -1,13 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Capacitor } from "@capacitor/core";
-import { Geolocation } from "@capacitor/geolocation";
-
-// Runs as a native Android/iOS app (Capacitor) vs. a regular website.
-// Native builds use @capacitor/geolocation, which talks to the OS location
-// APIs directly and handles the native permission prompt correctly. Web
-// builds fall back to the standard browser Geolocation API, so the exact
-// same component code works in both the deployed website and the app.
-const isNative = Capacitor.isNativePlatform();
 
 export default function useLiveLocation() {
   const [position, setPosition] = useState(null); // { lat, lon, accuracy, heading }
@@ -15,85 +6,49 @@ export default function useLiveLocation() {
   const [error, setError] = useState(null);
   const watchIdRef = useRef(null);
 
-  const toPosition = (pos) => ({
-    lat: pos.coords.latitude,
-    lon: pos.coords.longitude,
-    accuracy: pos.coords.accuracy,
-    heading: pos.coords.heading,
-  });
-
-  const getCurrentPositionOnce = useCallback(async () => {
-    try {
-      if (isNative) {
-        const perm = await Geolocation.requestPermissions();
-        if (perm.location !== "granted" && perm.coarseLocation !== "granted") {
-          throw new Error("Location permission denied.");
-        }
-        const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000 });
-        const p = toPosition(pos);
-        setPosition(p);
-        setError(null);
-        return p;
-      }
-
+  const getCurrentPositionOnce = useCallback(() => {
+    return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
-        throw new Error("Geolocation is not supported by this browser.");
+        const err = "Geolocation is not supported by this browser.";
+        setError(err);
+        reject(new Error(err));
+        return;
       }
-      return await new Promise((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            const p = toPosition(pos);
-            setPosition(p);
-            setError(null);
-            resolve(p);
-          },
-          (err) => reject(new Error(err.message || "Could not get your location.")),
-          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-        );
-      });
-    } catch (err) {
-      setError(err.message || "Could not get your location.");
-      throw err;
-    }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const p = {
+            lat: pos.coords.latitude,
+            lon: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            heading: pos.coords.heading,
+          };
+          setPosition(p);
+          setError(null);
+          resolve(p);
+        },
+        (err) => {
+          setError(err.message || "Could not get your location.");
+          reject(err);
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    });
   }, []);
 
-  const startTracking = useCallback(async () => {
-    if (watchIdRef.current !== null) return; // already tracking
-
-    if (isNative) {
-      try {
-        const perm = await Geolocation.requestPermissions();
-        if (perm.location !== "granted" && perm.coarseLocation !== "granted") {
-          setError("Location permission denied.");
-          return;
-        }
-        watchIdRef.current = await Geolocation.watchPosition(
-          { enableHighAccuracy: true, timeout: 15000 },
-          (pos, err) => {
-            if (err) {
-              setError(err.message || "Live location tracking failed.");
-              return;
-            }
-            if (pos) {
-              setPosition(toPosition(pos));
-              setError(null);
-            }
-          }
-        );
-        setTracking(true);
-      } catch (err) {
-        setError(err.message || "Live location tracking failed.");
-      }
-      return;
-    }
-
+  const startTracking = useCallback(() => {
     if (!navigator.geolocation) {
       setError("Geolocation is not supported by this browser.");
       return;
     }
+    if (watchIdRef.current !== null) return; // already tracking
     watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
-        setPosition(toPosition(pos));
+        setPosition({
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          heading: pos.coords.heading,
+        });
         setError(null);
       },
       (err) => setError(err.message || "Live location tracking failed."),
@@ -102,13 +57,9 @@ export default function useLiveLocation() {
     setTracking(true);
   }, []);
 
-  const stopTracking = useCallback(async () => {
+  const stopTracking = useCallback(() => {
     if (watchIdRef.current !== null) {
-      if (isNative) {
-        await Geolocation.clearWatch({ id: watchIdRef.current });
-      } else {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-      }
+      navigator.geolocation.clearWatch(watchIdRef.current);
       watchIdRef.current = null;
     }
     setTracking(false);
@@ -117,11 +68,7 @@ export default function useLiveLocation() {
   useEffect(() => {
     return () => {
       if (watchIdRef.current !== null) {
-        if (isNative) {
-          Geolocation.clearWatch({ id: watchIdRef.current });
-        } else {
-          navigator.geolocation.clearWatch(watchIdRef.current);
-        }
+        navigator.geolocation.clearWatch(watchIdRef.current);
       }
     };
   }, []);

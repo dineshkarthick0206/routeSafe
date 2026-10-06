@@ -6,7 +6,7 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
 const client = axios.create({
   baseURL: BASE_URL,
-  timeout: 90000,
+  timeout: 110000,
 });
 
 export async function getSafeRoutes({
@@ -51,5 +51,12 @@ export async function getCrimeHeatmap({ month, hourRange } = {}) {
 
 export async function getCrimeMeta() {
   const response = await client.get("/api/crime/meta");
+  return response.data;
+}
+
+export async function searchPlaces(query) {
+  const response = await client.get("/api/places/search", {
+    params: { q: query, limit: 5 },
+  });
   return response.data;
 }

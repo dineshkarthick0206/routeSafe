@@ -1,9 +1,0 @@
-venv/
-node_modules/
-dist/
-.env
-.env.production
-__pycache__/
-*.pyc
-.DS_Store
-android/app/build/

@@ -1,4 +1,7 @@
 /* ==========================================================================
+   Author: Devanandh S
+   Reg No: 24MID0296
+
    RouteSafe AI — design tokens
    Direction: a night-ops / telemetry console for a live spatio-temporal
    risk feed. Navy-black canvas, glass panels, orange/red risk signal.
@@ -727,3 +730,112 @@ a { color: var(--accent-blue); }
   .map-area { min-height: 40vh; }
   .kpi-bar { padding: 8px 16px; }
 }
+
+/* --------------------------------------------------------------------
+   Voice navigation
+   -------------------------------------------------------------------- */
+.voice-navigation-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.35);
+}
+.voice-navigation-panel strong { display: block; font-size: 13px; }
+.voice-navigation-panel p { margin: 4px 0 0; font-size: 11px; opacity: 0.75; }
+.voice-nav-btn {
+  border: 0;
+  border-radius: 9px;
+  padding: 8px 11px;
+  cursor: pointer;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.voice-nav-btn.active { animation: live-pulse 2s infinite; }
+
+/* --------------------------------------------------------------------
+   Place search
+   -------------------------------------------------------------------- */
+.place-search { margin: 10px 0 6px; position: relative; }
+.place-search-label { font-size: 12px; font-weight: 700; margin-bottom: 5px; opacity: .9; }
+
+/* Unified Search Bar Container */
+.search-input-container {
+  display: flex;
+  align-items: center;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 4px 12px;
+  margin-bottom: 12px;
+  transition: all 0.2s ease;
+}
+
+/* Highlight border when typing */
+.search-input-container:focus-within {
+  border-color: var(--accent-blue); 
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.search-icon {
+  color: var(--text-muted);
+  margin-right: 8px;
+}
+
+/* Seamless Input Field */
+.custom-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  padding: 8px 4px;
+  outline: none;
+  font-size: 14px;
+}
+
+.custom-search-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* Microphone Button Styling */
+.voice-search-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.voice-search-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+/* Pulsing Red Effect When Recording */
+.voice-search-btn.active {
+  color: var(--accent-red); 
+  animation: pulse-record 1.5s infinite;
+}
+
+@keyframes pulse-record {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.place-search-status { font-size: 11px; opacity: .7; padding: 5px 2px; }
+.place-search-results { position: relative; z-index: 20; margin-top: 4px; border-radius: 9px; overflow: hidden; border: 1px solid rgba(148,163,184,.25); background: #111827; box-shadow: 0 10px 25px rgba(0,0,0,.25); }
+.place-search-result { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 9px 10px; border: 0; border-bottom: 1px solid rgba(148,163,184,.12); background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.place-search-result:last-child { border-bottom: 0; }
+.place-search-result:hover { background: rgba(148,163,184,.12); }
+.place-search-result strong { font-size: 12px; }
+.place-search-result span { font-size: 10px; opacity: .7; line-height: 1.35; }

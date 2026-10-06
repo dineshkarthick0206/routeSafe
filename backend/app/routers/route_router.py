@@ -16,6 +16,8 @@ from app.services import routing_service, aqi_service, weather_service, risk_fus
 from app.ml import crime_hotspot_model
 from app.crime_cache import get_crime_cache
 
+ROUTE_TIMEOUT_S = 30  # per-route scoring budget
+
 router = APIRouter(prefix="/api/routes", tags=["routes"])
 
 
@@ -64,13 +66,13 @@ async def get_safe_routes(req: RouteRequest):
         "traffic": req.weight_traffic,
     }
 
-    profiles = []
-    districts_by_route = {}
-
-    async def score_one_route(idx, route):
-        sampled_points = routing_service.sample_route_points(route["geometry"], every_n=8)
-        segment_risks, districts_touched = await _score_segments(
-            sampled_points, route["duration_s"], crime_grid
+    # Score all candidate routes concurrently. Each route gets a time budget;
+    # a slow route is dropped so the others still come back.
+    async def _score_one(idx, route):
+        sampled_points = routing_service.sample_route_points(route["geometry"])
+        segment_risks, districts_touched = await asyncio.wait_for(
+            _score_segments(sampled_points, route["duration_s"], crime_grid),
+            timeout=ROUTE_TIMEOUT_S,
         )
         profile = risk_fusion.score_route(
             route_index=idx,
@@ -80,17 +82,27 @@ async def get_safe_routes(req: RouteRequest):
             mode=req.mode,
             weights=weights,
         )
-        return idx, profile, route["geometry"], sorted(districts_touched)
+        return profile, route["geometry"], sorted(districts_touched)
 
-    # Score every candidate route CONCURRENTLY rather than one after another —
-    # with 3 routes this cuts total latency roughly 3x, which matters a lot
-    # on slower networks (e.g. free-tier hosting) where each route's AQI
-    # lookups can otherwise stack up sequentially and blow past client-side
-    # request timeouts.
-    scored = await asyncio.gather(*[score_one_route(idx, route) for idx, route in enumerate(raw_routes)])
-    for idx, profile, geometry, districts in scored:
+    outcomes = await asyncio.gather(
+        *[_score_one(i, r) for i, r in enumerate(raw_routes)],
+        return_exceptions=True,
+    )
+    profiles = []
+    districts_by_route = {}
+    for idx, out in enumerate(outcomes):
+        if isinstance(out, BaseException):
+            continue  # timed-out / failed route is dropped
+        profile, geometry, districts = out
         profiles.append((profile, geometry))
         districts_by_route[idx] = districts
+
+    if not profiles:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Route analysis timed out (>{ROUTE_TIMEOUT_S}s per route). "
+                   "Air-quality data is slow right now - please try again.",
+        )
 
     # 4. Rank
     if req.ranking == "pareto":
@@ -129,22 +141,13 @@ async def get_safe_routes(req: RouteRequest):
 async def _score_segments(sampled_points, total_duration_s, crime_grid):
     """
     For each sampled point along a route, fetch/estimate AQI and crime risk.
-    AQI calls run concurrently, each with a short hard timeout — if a
-    particular station is slow to respond, that one point falls back to the
-    neutral AQI value quickly rather than stalling the entire route's score
-    (and, with several routes scored concurrently, the whole request).
+    AQI calls are made concurrently to keep latency reasonable.
     """
-    AQI_CALL_TIMEOUT_S = 8
-
-    async def bounded_aqi_call(lat, lon):
-        try:
-            return await asyncio.wait_for(aqi_service.get_aqi_for_point(lat, lon), timeout=AQI_CALL_TIMEOUT_S)
-        except Exception as e:
-            return e
-
     n_points = len(sampled_points)
-    aqi_tasks = [bounded_aqi_call(lat, lon) for lat, lon in sampled_points]
-    aqi_results = await asyncio.gather(*aqi_tasks)
+    aqi_tasks = [
+        aqi_service.get_aqi_for_point(lat, lon) for lat, lon in sampled_points
+    ]
+    aqi_results = await asyncio.gather(*aqi_tasks, return_exceptions=True)
 
     segment_risks = []
     districts_touched = set()

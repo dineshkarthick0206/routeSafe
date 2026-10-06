@@ -1,7 +1,4 @@
 /* ==========================================================================
-   Author: Devanandh S
-   Reg No: 24MID0296
-
    RouteSafe AI — design tokens
    Direction: a night-ops / telemetry console for a live spatio-temporal
    risk feed. Navy-black canvas, glass panels, orange/red risk signal.
@@ -762,76 +759,9 @@ a { color: var(--accent-blue); }
    -------------------------------------------------------------------- */
 .place-search { margin: 10px 0 6px; position: relative; }
 .place-search-label { font-size: 12px; font-weight: 700; margin-bottom: 5px; opacity: .9; }
-
-/* Unified Search Bar Container */
-.search-input-container {
-  display: flex;
-  align-items: center;
-  background-color: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 4px 12px;
-  margin-bottom: 12px;
-  transition: all 0.2s ease;
-}
-
-/* Highlight border when typing */
-.search-input-container:focus-within {
-  border-color: var(--accent-blue); 
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
-}
-
-.search-icon {
-  color: var(--text-muted);
-  margin-right: 8px;
-}
-
-/* Seamless Input Field */
-.custom-search-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: var(--text-primary);
-  padding: 8px 4px;
-  outline: none;
-  font-size: 14px;
-}
-
-.custom-search-input::placeholder {
-  color: var(--text-faint);
-}
-
-/* Microphone Button Styling */
-.voice-search-btn {
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-}
-
-.voice-search-btn:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-  color: var(--text-primary);
-}
-
-/* Pulsing Red Effect When Recording */
-.voice-search-btn.active {
-  color: var(--accent-red); 
-  animation: pulse-record 1.5s infinite;
-}
-
-@keyframes pulse-record {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-  70% { transform: scale(1.1); box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
-  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-}
-
+.place-search-input-wrap { display: flex; align-items: center; gap: 6px; }
+.place-search-input-wrap input { flex: 1; min-width: 0; }
+.place-search-mic { border: 0; border-radius: 8px; padding: 8px 10px; cursor: pointer; }
 .place-search-status { font-size: 11px; opacity: .7; padding: 5px 2px; }
 .place-search-results { position: relative; z-index: 20; margin-top: 4px; border-radius: 9px; overflow: hidden; border: 1px solid rgba(148,163,184,.25); background: #111827; box-shadow: 0 10px 25px rgba(0,0,0,.25); }
 .place-search-result { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 9px 10px; border: 0; border-bottom: 1px solid rgba(148,163,184,.12); background: transparent; color: inherit; text-align: left; cursor: pointer; }
@@ -839,3 +769,112 @@ a { color: var(--accent-blue); }
 .place-search-result:hover { background: rgba(148,163,184,.12); }
 .place-search-result strong { font-size: 12px; }
 .place-search-result span { font-size: 10px; opacity: .7; line-height: 1.35; }
+
+/* ---- Plan a Safe Route panel: search fields (match design reference) ---- */
+.place-search { margin: 14px 0 10px; position: relative; }
+.place-search-label { font-size: 14px; font-weight: 700; margin-bottom: 8px; color: var(--text-primary); opacity: 1; }
+.place-search-input-wrap {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 14px; height: 52px;
+  background: rgba(10, 15, 28, 0.55);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  transition: border-color .15s, box-shadow .15s;
+}
+.place-search-input-wrap:focus-within {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+.place-search-input-wrap .ps-icon { flex: none; color: var(--text-muted); }
+.place-search-input-wrap input {
+  flex: 1; min-width: 0; height: 100%;
+  background: transparent; border: 0; outline: 0; box-shadow: none;
+  color: var(--text-primary); font: inherit; font-size: 15px; padding: 0;
+}
+.place-search-input-wrap input::placeholder { color: var(--text-faint); }
+.place-search-mic {
+  flex: none; display: grid; place-items: center;
+  background: transparent; border: 0; padding: 4px; border-radius: 8px;
+  color: var(--text-muted); cursor: pointer;
+}
+.place-search-mic:hover { color: var(--text-primary); }
+.place-search-mic.listening { color: var(--accent-red); animation: ps-pulse 1s infinite; }
+@keyframes ps-pulse { 50% { opacity: .45; } }
+
+/* Live tracking checkbox: custom, aligned, themed */
+.search-panel .live-tracking-toggle {
+  display: flex; align-items: center; gap: 10px;
+  margin: 16px 0 6px; font-size: 14px; color: var(--text-primary); cursor: pointer;
+}
+.search-panel .live-tracking-toggle input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none; flex: none;
+  width: 18px; height: 18px; margin: 0;
+  border: 1.5px solid var(--border-strong); border-radius: 5px;
+  background: rgba(10, 15, 28, 0.55); cursor: pointer;
+  display: grid; place-items: center;
+}
+.search-panel .live-tracking-toggle input[type="checkbox"]:checked {
+  background: var(--accent-orange); border-color: var(--accent-orange);
+}
+.search-panel .live-tracking-toggle input[type="checkbox"]:checked::after {
+  content: ""; width: 4px; height: 9px; margin-top: -2px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+
+/* ====================================================================
+   RESPONSIVE LAYER - adapts to device width AND height
+   (kept last so it overrides the base rules above)
+   ==================================================================== */
+html, body { max-width: 100%; overflow-x: hidden; }
+img, svg, video, canvas { max-width: 100%; }
+
+/* Fluid app height: dvh follows mobile browser toolbars */
+.app-shell { height: 100vh; height: 100dvh; padding-bottom: env(safe-area-inset-bottom); }
+.app-header { padding: clamp(8px, 2vh, 16px) clamp(12px, 3vw, 24px) 8px; }
+.app-header h1 { font-size: clamp(16px, 2.4vw + 8px, 24px); }
+.app-header p { font-size: clamp(11px, 1vw + 8px, 14px); }
+.app-body { padding: 0 clamp(8px, 1.6vw, 16px) clamp(8px, 1.6vw, 16px); gap: clamp(8px, 1.2vw, 12px); }
+
+/* Sidebar width scales with the screen on desktop/laptop */
+.sidebar { width: clamp(290px, 28vw, 400px); padding: clamp(12px, 1.6vw, 18px); -webkit-overflow-scrolling: touch; }
+.search-panel select, .place-search-input-wrap input { font-size: 16px; } /* stops iOS zoom-on-focus */
+.search-panel button, .place-search-mic { min-height: 40px; }
+.place-search-input-wrap { height: clamp(46px, 6vh, 54px); }
+
+/* Tablet & phones: stack, map on top feel, sidebar scrolls */
+@media (max-width: 900px) {
+  .app-body { flex-direction: column; }
+  .sidebar { width: 100%; max-height: 46vh; max-height: 46dvh; }
+  .map-area { flex: 1; min-height: 38vh; min-height: 38dvh; }
+  .kpi-bar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; overflow-x: auto; }
+}
+
+/* Small phones */
+@media (max-width: 480px) {
+  .app-header p { display: none; }
+  .sidebar { max-height: 52dvh; padding: 12px; gap: 12px; }
+  .map-legend { font-size: 10px; max-width: 70vw; }
+  .voice-navigation-panel { flex-direction: column; align-items: stretch; }
+  .leaflet-control-layers { max-width: 70vw; }
+}
+
+/* Short screens (phones in landscape, small laptops): save vertical space */
+@media (max-height: 560px) {
+  .app-header { padding-top: 4px; padding-bottom: 4px; }
+  .app-header p { display: none; }
+  .app-logo { font-size: 18px; }
+}
+@media (max-width: 900px) and (max-height: 520px) and (orientation: landscape) {
+  .app-body { flex-direction: row; }
+  .sidebar { width: clamp(260px, 38vw, 340px); max-height: none; }
+  .map-area { min-height: 0; }
+}
+
+/* Very tall/large screens */
+@media (min-width: 1600px) {
+  .sidebar { width: 420px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

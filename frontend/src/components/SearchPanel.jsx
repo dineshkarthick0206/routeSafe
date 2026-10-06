@@ -1,19 +1,18 @@
-// Author: Devanandh S
-// Reg No: 24MID0296
-
 import React, { useEffect, useRef, useState } from "react";
 import { searchPlaces } from "../api";
-import { Mic, Search } from 'lucide-react';
 
 function fmt(point) {
   if (!point) return "Not set";
   return `${point[0].toFixed(5)}, ${point[1].toFixed(5)}`;
 }
 
+
+
 function PlaceSearchInput({ label, kind, onSelect }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
+  const [searchState, setSearchState] = useState("idle"); // idle | empty | error
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef(null);
 
@@ -21,20 +20,29 @@ function PlaceSearchInput({ label, kind, onSelect }) {
     const text = query.trim();
     if (text.length < 2) {
       setResults([]);
+      setSearchState("idle");
       return undefined;
     }
     let cancelled = false;
     const timer = setTimeout(async () => {
       setSearching(true);
+      setSearchState("idle");
       try {
         const data = await searchPlaces(text);
-        if (!cancelled) setResults(Array.isArray(data) ? data : data.results || []);
+        const list = Array.isArray(data) ? data : data.results || [];
+        if (!cancelled) {
+          setResults(list);
+          setSearchState(list.length ? "idle" : "empty");
+        }
       } catch (e) {
-        if (!cancelled) setResults([]);
+        if (!cancelled) {
+          setResults([]);
+          setSearchState("error");
+        }
       } finally {
         if (!cancelled) setSearching(false);
       }
-    }, 350);
+    }, 600);
     return () => {
       cancelled = true;
       clearTimeout(timer);
@@ -79,25 +87,30 @@ function PlaceSearchInput({ label, kind, onSelect }) {
   return (
     <div className="place-search">
       <div className="place-search-label">{label}</div>
-      <div className="search-input-container">
-        <Search className="search-icon" size={18} />
+      <div className="place-search-input-wrap">
+        <svg className="ps-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+        </svg>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={`Search ${label.toLowerCase()} location...`}
           autoComplete="off"
-          className="custom-search-input"
         />
-        <button 
-          type="button" 
-          className={`voice-search-btn ${listening ? 'active' : ''}`} 
-          onClick={startVoiceSearch} 
-          title="Voice search"
-        >
-          <Mic size={18} />
+        <button type="button" className={listening ? "place-search-mic listening" : "place-search-mic"} onClick={startVoiceSearch} title="Voice search" aria-label="Voice search">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="9" y="2" width="6" height="12" rx="3" />
+            <path d="M5 11a7 7 0 0 0 14 0" /><line x1="12" y1="18" x2="12" y2="22" />
+          </svg>
         </button>
       </div>
       {searching && <div className="place-search-status">Searching places…</div>}
+      {!searching && searchState === "empty" && (
+        <div className="place-search-status">No places found - try a nearby town, or add the district/state.</div>
+      )}
+      {!searching && searchState === "error" && (
+        <div className="place-search-status">Search service is busy or unreachable - please retry in a moment.</div>
+      )}
       {results.length > 0 && (
         <div className="place-search-results">
           {results.map((place, index) => (

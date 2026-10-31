@@ -13,6 +13,7 @@ to both pollution and crime risk is materially higher than a car occupant's.
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional
 
 MODE_WEIGHTS = {
     # (aqi_multiplier, crime_multiplier, traffic_multiplier)
@@ -28,7 +29,7 @@ class SegmentRisk:
     lon: float
     eta: datetime
     aqi: float
-    crime_score: float
+    crime_score: Optional[float]  # 0-100, or None where there is no crime data (outside Tamil Nadu)
     traffic_delay_factor: float  # 1.0 = no delay, 2.0 = double travel time
 
 
@@ -59,10 +60,14 @@ def score_route(
     segment_risks: list[SegmentRisk],
     mode: str = "car",
     weights: dict = None,
+    fallback_crime: float = 0.0,
 ) -> RouteRiskProfile:
     """
     Aggregates per-segment risk into one route-level profile.
     weights: {"aqi": 0.33, "crime": 0.34, "traffic": 0.33} - must sum to ~1.0
+    fallback_crime: 0-100 value used only if NO point on the route has crime
+    data (e.g. a route entirely outside Tamil Nadu). Points without data are
+    otherwise left out of the crime average rather than counted as zero.
     """
     if weights is None:
         weights = {"aqi": 0.33, "crime": 0.34, "traffic": 0.33}
@@ -73,8 +78,12 @@ def score_route(
         avg_aqi, max_crime, avg_crime, avg_delay = 0, 0, 0, 1.0
     else:
         avg_aqi = sum(s.aqi for s in segment_risks) / len(segment_risks)
-        max_crime = max(s.crime_score for s in segment_risks)
-        avg_crime = sum(s.crime_score for s in segment_risks) / len(segment_risks)
+        crime_vals = [s.crime_score for s in segment_risks if s.crime_score is not None]
+        if crime_vals:
+            max_crime = max(crime_vals)
+            avg_crime = sum(crime_vals) / len(crime_vals)
+        else:
+            max_crime = avg_crime = fallback_crime
         avg_delay = sum(s.traffic_delay_factor for s in segment_risks) / len(segment_risks)
 
     # Normalize each dimension to 0-1 using reasonable real-world ranges

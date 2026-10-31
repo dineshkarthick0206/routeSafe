@@ -1,17 +1,16 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const backend = "http://localhost:8000";
+
 export default defineConfig({
   plugins: [react()],
   server: {
+    host: true, // reachable from a phone on the same network
     port: 5173,
     proxy: {
-      // During local dev, forwards /api calls to the FastAPI backend
-      // so you don't hit CORS issues.
-      "/api": {
-        target: "http://localhost:8000",
-        changeOrigin: true,
-      },
+      "/api": { target: backend, changeOrigin: true },
+      "/health": { target: backend, changeOrigin: true },
     },
   },
 });

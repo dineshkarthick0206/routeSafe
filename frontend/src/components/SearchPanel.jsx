@@ -1,43 +1,60 @@
 import React, { useEffect, useRef, useState } from "react";
 import { searchPlaces } from "../api";
 
-function fmt(point) {
-  if (!point) return "Not set";
-  return `${point[0].toFixed(5)}, ${point[1].toFixed(5)}`;
+function fmt(p) {
+  return p ? `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}` : "Not set yet";
 }
 
+function MicIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <line x1="12" y1="18" x2="12" y2="22" />
+    </svg>
+  );
+}
 
-
-function PlaceSearchInput({ label, kind, onSelect }) {
+// One place box: type to search (Nominatim/Photon via the backend) or tap the
+// mic to speak the place name. The chosen point is shown underneath.
+function PlaceInput({ label, kind, point, picking, onSelect, onTogglePin, children }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
-  const [searchState, setSearchState] = useState("idle"); // idle | empty | error
+  const [state, setState] = useState("idle"); // idle | empty | error
   const [listening, setListening] = useState(false);
+  const [voiceMsg, setVoiceMsg] = useState("");
   const recognitionRef = useRef(null);
+
+  // Keep the box in sync when the point is set from elsewhere (my location, map pin).
+  useEffect(() => {
+    if (point?.label && point.label !== query) setQuery(point.label);
+    if (!point) setQuery("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [point]);
 
   useEffect(() => {
     const text = query.trim();
-    if (text.length < 2) {
+    if (text.length < 2 || text === point?.label) {
       setResults([]);
-      setSearchState("idle");
+      setState("idle");
       return undefined;
     }
     let cancelled = false;
     const timer = setTimeout(async () => {
       setSearching(true);
-      setSearchState("idle");
+      setState("idle");
       try {
         const data = await searchPlaces(text);
         const list = Array.isArray(data) ? data : data.results || [];
         if (!cancelled) {
           setResults(list);
-          setSearchState(list.length ? "idle" : "empty");
+          setState(list.length ? "idle" : "empty");
         }
       } catch (e) {
         if (!cancelled) {
           setResults([]);
-          setSearchState("error");
+          setState("error");
         }
       } finally {
         if (!cancelled) setSearching(false);
@@ -47,270 +64,276 @@ function PlaceSearchInput({ label, kind, onSelect }) {
       cancelled = true;
       clearTimeout(timer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
-  function selectPlace(place) {
+  useEffect(() => () => recognitionRef.current?.abort?.(), []);
+
+  function choose(place) {
     const lat = Number(place.lat);
     const lon = Number(place.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    onSelect(kind, lat, lon);
-    setQuery(place.display_name || place.name || "");
+    const text = place.display_name || place.name || "";
+    onSelect(kind, { lat, lon, label: text });
+    setQuery(text);
     setResults([]);
   }
 
   function startVoiceSearch() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Voice search is not supported in this browser. Please use Google Chrome.");
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      setVoiceMsg("Voice search needs Chrome or Edge.");
       return;
     }
-    if (recognitionRef.current) recognitionRef.current.stop();
-    const recognition = new SpeechRecognition();
-    recognition.lang = "en-IN";
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.onstart = () => setListening(true);
-    recognition.onresult = (event) => setQuery(event.results[0][0].transcript);
-    recognition.onerror = (event) => {
-      console.error("Voice search error:", event.error);
-      setListening(false);
-      if (event.error !== "aborted") alert("Voice recognition error: " + event.error);
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const rec = new SR();
+    rec.lang = "en-IN";
+    rec.continuous = false;
+    rec.interimResults = false;
+    rec.onstart = () => {
+      setListening(true);
+      setVoiceMsg("Listening… say a place name");
     };
-    recognition.onend = () => {
+    rec.onresult = (e) => {
+      const said = e.results[0][0].transcript;
+      setQuery(said);
+      setVoiceMsg(`Heard “${said}”`);
+    };
+    rec.onerror = (e) => {
+      setListening(false);
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") setVoiceMsg("Microphone permission is blocked.");
+      else if (e.error === "no-speech") setVoiceMsg("Didn't catch that — try again.");
+      else if (e.error !== "aborted") setVoiceMsg(`Voice search error: ${e.error}`);
+    };
+    rec.onend = () => {
       recognitionRef.current = null;
       setListening(false);
     };
-    recognitionRef.current = recognition;
-    recognition.start();
+    recognitionRef.current = rec;
+    rec.start();
   }
 
   return (
-    <div className="place-search">
-      <div className="place-search-label">{label}</div>
-      <div className="place-search-input-wrap">
-        <svg className="ps-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-        </svg>
+    <div className="place">
+      <label className="field-label" htmlFor={`place-${kind}`}>{label}</label>
+      <div className="place-box">
         <input
+          id={`place-${kind}`}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={`Search ${label.toLowerCase()} location...`}
+          placeholder={`Search ${label.toLowerCase()}…`}
           autoComplete="off"
         />
-        <button type="button" className={listening ? "place-search-mic listening" : "place-search-mic"} onClick={startVoiceSearch} title="Voice search" aria-label="Voice search">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <rect x="9" y="2" width="6" height="12" rx="3" />
-            <path d="M5 11a7 7 0 0 0 14 0" /><line x1="12" y1="18" x2="12" y2="22" />
-          </svg>
+        <button
+          type="button"
+          className={listening ? "icon-btn mic listening" : "icon-btn mic"}
+          onClick={startVoiceSearch}
+          title="Voice search"
+          aria-label={`Voice search for ${label.toLowerCase()}`}
+        >
+          <MicIcon />
         </button>
       </div>
-      {searching && <div className="place-search-status">Searching places…</div>}
-      {!searching && searchState === "empty" && (
-        <div className="place-search-status">No places found - try a nearby town, or add the district/state.</div>
+      {voiceMsg && <div className="place-status">{voiceMsg}</div>}
+      {searching && <div className="place-status">Searching places…</div>}
+      {!searching && state === "empty" && (
+        <div className="place-status">No places found — try a nearby town, or add the district.</div>
       )}
-      {!searching && searchState === "error" && (
-        <div className="place-search-status">Search service is busy or unreachable - please retry in a moment.</div>
+      {!searching && state === "error" && (
+        <div className="place-status warn">Search service is busy or unreachable — please retry in a moment.</div>
       )}
       {results.length > 0 && (
-        <div className="place-search-results">
-          {results.map((place, index) => (
-            <button type="button" key={`${place.place_id || index}`} className="place-search-result" onClick={() => selectPlace(place)}>
-              <strong>{place.name || place.display_name}</strong>
-              {place.name && place.display_name && <span>{place.display_name}</span>}
+        <div className="place-results">
+          {results.map((p, i) => (
+            <button type="button" key={`${p.place_id || i}`} onClick={() => choose(p)}>
+              <b>{p.name || p.display_name}</b>
+              {p.name && p.display_name && <span>{p.display_name}</span>}
             </button>
           ))}
         </div>
       )}
+      <div className={`coord ${kind === "end" ? "coord-end" : "coord-start"}`}>
+        <span className="dot">●</span>
+        <span className="coord-text">{fmt(point)}</span>
+        {children}
+        <button type="button" className={picking ? "link-btn on" : "link-btn"} onClick={onTogglePin}>
+          {picking ? "Click the map…" : "📍 Pin on map"}
+        </button>
+      </div>
     </div>
   );
 }
 
+const MODES = [
+  ["car", "🚗", "Car"],
+  ["two_wheeler", "🏍️", "Two-wheeler"],
+  ["walking", "🚶", "Walking"],
+];
+
+const WEIGHTS = [
+  ["aqi", "Air quality"],
+  ["crime", "Crime context"],
+  ["traffic", "Traffic"],
+];
+
 export default function SearchPanel({
-  startPoint,
-  endPoint,
+  start,
+  end,
   waypoints,
   pickingMode,
   onSetPickingMode,
-  onManualSet,
+  onSetPlace,
+  onSwap,
   onRemoveWaypoint,
+  onClearWaypoints,
   onReorderWaypoint,
   onUseMyLocation,
   locating,
   liveTracking,
   onToggleLiveTracking,
+  voiceNavigation,
+  onToggleVoiceNavigation,
+  voiceStatus,
   mode,
   onModeChange,
   ranking,
   onRankingChange,
-  weightAqi,
-  weightCrime,
-  weightTraffic,
+  weights,
   onWeightChange,
   onSearch,
   loading,
+  error,
 }) {
-  const [manualText, setManualText] = useState({ start: "", destination: "" });
+  const canSearch = start && end && !loading;
 
-  function handleManualApply(kind) {
-    const raw = manualText[kind];
-    const [lat, lon] = raw.split(",").map((s) => parseFloat(s.trim()));
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    onManualSet(kind, lat, lon);
-    setManualText((m) => ({ ...m, [kind]: "" }));
-  }
-
-  function handleSubmit(e) {
+  function submit(e) {
     e.preventDefault();
     onSearch();
   }
 
-  const canSearch = startPoint && endPoint && !loading;
-
-  function handlePlaceSelect(kind, lat, lon) {
-    onManualSet(kind, lat, lon);
-  }
-
   return (
-    <form className="search-panel" onSubmit={handleSubmit}>
-      <h2>Plan a Safe Route</h2>
-
-      <PlaceSearchInput label="Start" kind="start" onSelect={handlePlaceSelect} />
-
-      {/* Start */}
-      <div className="location-field">
-        <div className="location-field-label">
-          <span className="pin-dot pin-start" /> Start
+    <form className="card plan" onSubmit={submit}>
+      <div className="card-head">
+        <div>
+          <span className="eyebrow">YOUR JOURNEY</span>
+          <h2>Plan a safer route</h2>
         </div>
-        <div className="location-value">{fmt(startPoint)}</div>
-        <div className="location-actions">
-          <button
-            type="button"
-            className={pickingMode === "start" ? "pin-btn active" : "pin-btn"}
-            onClick={() => onSetPickingMode(pickingMode === "start" ? null : "start")}
-          >
-            {pickingMode === "start" ? "Click the map…" : "📍 Pin on map"}
-          </button>
-          <button type="button" className="pin-btn" onClick={onUseMyLocation} disabled={locating}>
-            {locating ? "Locating…" : "🎯 Use my location"}
-          </button>
-        </div>
-        <details className="manual-entry">
-          <summary>Enter coordinates manually</summary>
-          <div className="manual-entry-row">
-            <input
-              placeholder="13.0604,80.2496"
-              value={manualText.start}
-              onChange={(e) => setManualText((m) => ({ ...m, start: e.target.value }))}
-            />
-            <button type="button" onClick={() => handleManualApply("start")}>Set</button>
-          </div>
-        </details>
+        <button type="button" className="icon-btn" onClick={onSwap} disabled={!start && !end} title="Swap start and destination" aria-label="Swap start and destination">⇅</button>
       </div>
 
-      {/* Waypoints */}
+      <PlaceInput
+        label="START LOCATION"
+        kind="start"
+        point={start}
+        picking={pickingMode === "start"}
+        onSelect={onSetPlace}
+        onTogglePin={() => onSetPickingMode(pickingMode === "start" ? null : "start")}
+      >
+        <button type="button" className="link-btn" onClick={onUseMyLocation} disabled={locating}>
+          {locating ? "Locating…" : "🎯 My location"}
+        </button>
+      </PlaceInput>
+
       {waypoints.length > 0 && (
-        <div className="waypoints-list">
+        <div className="stops">
           {waypoints.map((wp, i) => (
-            <div className="location-field waypoint-field" key={wp.id}>
-              <div className="location-field-label">
-                <span className="pin-dot pin-waypoint" /> Stop {i + 1}
-              </div>
-              <div className="location-value">{fmt([wp.lat, wp.lon])}</div>
-              <div className="location-actions">
-                <button type="button" className="pin-btn" onClick={() => onReorderWaypoint(i, -1)} disabled={i === 0}>↑</button>
-                <button type="button" className="pin-btn" onClick={() => onReorderWaypoint(i, 1)} disabled={i === waypoints.length - 1}>↓</button>
-                <button type="button" className="pin-btn danger" onClick={() => onRemoveWaypoint(i)}>Remove</button>
-              </div>
+            <div className="stop-row" key={wp.id}>
+              <span className="stop-dot" />
+              <span className="stop-text">Stop {i + 1}: {fmt(wp)}</span>
+              <button type="button" className="mini" onClick={() => onReorderWaypoint(i, -1)} disabled={i === 0} aria-label="Move stop up">↑</button>
+              <button type="button" className="mini" onClick={() => onReorderWaypoint(i, 1)} disabled={i === waypoints.length - 1} aria-label="Move stop down">↓</button>
+              <button type="button" className="mini danger" onClick={() => onRemoveWaypoint(i)} aria-label="Remove stop">✕</button>
             </div>
           ))}
         </div>
       )}
 
-      <button
-        type="button"
-        className={pickingMode === "waypoint" ? "add-stop-btn active" : "add-stop-btn"}
-        onClick={() => onSetPickingMode(pickingMode === "waypoint" ? null : "waypoint")}
-      >
-        {pickingMode === "waypoint" ? "Click the map to add a stop…" : "+ Add stop"}
-      </button>
-
-      {/* Destination */}
-      <PlaceSearchInput label="Destination" kind="destination" onSelect={handlePlaceSelect} />
-      <div className="location-field">
-        <div className="location-field-label">
-          <span className="pin-dot pin-destination" /> Destination
-        </div>
-        <div className="location-value">{fmt(endPoint)}</div>
-        <div className="location-actions">
-          <button
-            type="button"
-            className={pickingMode === "destination" ? "pin-btn active" : "pin-btn"}
-            onClick={() => onSetPickingMode(pickingMode === "destination" ? null : "destination")}
-          >
-            {pickingMode === "destination" ? "Click the map…" : "📍 Pin on map"}
-          </button>
-        </div>
-        <details className="manual-entry">
-          <summary>Enter coordinates manually</summary>
-          <div className="manual-entry-row">
-            <input
-              placeholder="13.0067,80.2206"
-              value={manualText.destination}
-              onChange={(e) => setManualText((m) => ({ ...m, destination: e.target.value }))}
-            />
-            <button type="button" onClick={() => handleManualApply("destination")}>Set</button>
-          </div>
-        </details>
+      <div className="row">
+        <button
+          type="button"
+          className={pickingMode === "waypoint" ? "secondary full on" : "secondary full"}
+          onClick={() => onSetPickingMode(pickingMode === "waypoint" ? null : "waypoint")}
+        >
+          {pickingMode === "waypoint" ? "Click the map to drop a stop…" : "+ Add intermediate stop"}
+        </button>
+        {waypoints.length > 0 && (
+          <button type="button" className="secondary" onClick={onClearWaypoints}>Clear</button>
+        )}
       </div>
 
-      <label className="live-tracking-toggle">
-        <input type="checkbox" checked={liveTracking} onChange={onToggleLiveTracking} />
-        Live tracking (follow me &amp; watch for drift)
-      </label>
+      <PlaceInput
+        label="DESTINATION"
+        kind="end"
+        point={end}
+        picking={pickingMode === "end"}
+        onSelect={onSetPlace}
+        onTogglePin={() => onSetPickingMode(pickingMode === "end" ? null : "end")}
+      />
 
-      <label>
-        Mode of travel
-        <select value={mode} onChange={(e) => onModeChange(e.target.value)}>
-          <option value="car">Car</option>
-          <option value="two_wheeler">Two-wheeler</option>
-          <option value="walking">Walking</option>
-        </select>
-      </label>
+      <span className="field-label">TRAVEL MODE</span>
+      <div className="segmented" role="group" aria-label="Travel mode">
+        {MODES.map(([v, icon, text]) => (
+          <button type="button" key={v} className={mode === v ? "chosen" : ""} onClick={() => onModeChange(v)}>
+            <span aria-hidden="true">{icon}</span> {text}
+          </button>
+        ))}
+      </div>
+      <p className="hint">
+        {mode === "walking"
+          ? "Walking time is estimated at about 5 km/h on pedestrian routes."
+          : mode === "two_wheeler"
+          ? "Two-wheeler time is estimated at up to 45 km/h average."
+          : "Car time comes from the routing engine."}
+      </p>
 
-      <label>
-        Ranking method
-        <select value={ranking} onChange={(e) => onRankingChange(e.target.value)}>
-          <option value="weighted">Weighted sum (use sliders below)</option>
-          <option value="pareto">Pareto-optimal (no dominated routes)</option>
-        </select>
-      </label>
+      <span className="field-label">RANKING METHOD</span>
+      <div className="segmented" role="group" aria-label="Ranking method">
+        <button type="button" className={ranking === "weighted" ? "chosen" : ""} onClick={() => onRankingChange("weighted")}>Weighted score</button>
+        <button type="button" className={ranking === "pareto" ? "chosen" : ""} onClick={() => onRankingChange("pareto")}>Pareto trade-off</button>
+      </div>
 
       {ranking === "weighted" && (
         <div className="weights">
-          <label>
-            Air Quality priority: {weightAqi}%
-            <input type="range" min="0" max="100" value={weightAqi}
-              onChange={(e) => onWeightChange("aqi", Number(e.target.value))} />
-          </label>
-          <label>
-            Crime Safety priority: {weightCrime}%
-            <input type="range" min="0" max="100" value={weightCrime}
-              onChange={(e) => onWeightChange("crime", Number(e.target.value))} />
-          </label>
-          <label>
-            Traffic priority: {weightTraffic}%
-            <input type="range" min="0" max="100" value={weightTraffic}
-              onChange={(e) => onWeightChange("traffic", Number(e.target.value))} />
-          </label>
+          <div className="weights-title">
+            <span className="field-label">RISK PRIORITIES</span>
+            <span className="hint">{weights.aqi + weights.crime + weights.traffic}% total</span>
+          </div>
+          {WEIGHTS.map(([key, name]) => (
+            <div className="weight" key={key}>
+              <div><span>{name}</span><b>{weights[key]}%</b></div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={weights[key]}
+                onChange={(e) => onWeightChange(key, Number(e.target.value))}
+                aria-label={`${name} priority`}
+              />
+            </div>
+          ))}
         </div>
       )}
 
-      <button type="submit" className="find-route-btn" disabled={!canSearch}>
-        {loading ? "Finding safest route…" : "Find Safe Route"}
+      <span className="field-label">NAVIGATION</span>
+      <div className="toggles">
+        <button type="button" className={liveTracking ? "toggle on" : "toggle"} onClick={onToggleLiveTracking} aria-pressed={liveTracking}>
+          <span className="toggle-icon">📡</span>
+          <span><b>Live tracking</b><small>{liveTracking ? "Following you, watching for drift" : "Follow my position on the map"}</small></span>
+        </button>
+        <button type="button" className={voiceNavigation ? "toggle on" : "toggle"} onClick={onToggleVoiceNavigation} aria-pressed={voiceNavigation}>
+          <span className="toggle-icon">🔊</span>
+          <span><b>Voice guidance</b><small>{voiceStatus}</small></span>
+        </button>
+      </div>
+
+      <button className="primary" type="submit" disabled={!canSearch}>
+        {loading ? "Analysing route…" : "↗  Find routes"}
       </button>
-      {!startPoint || !endPoint ? (
-        <div className="hint-text">Pin a start and destination to continue.</div>
-      ) : null}
+      {!start || !end ? <p className="hint center">Set a start and destination to continue.</p> : null}
+      {error && <div className="error" role="alert">{error}</div>}
     </form>
   );
 }

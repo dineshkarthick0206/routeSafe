@@ -1,303 +1,89 @@
-# RouteSafe AI — Setup & Deployment Guide
+# RouteSafe AI
 
-A multi-modal safe-route recommender for Tamil Nadu that fuses live air
-quality (OpenAQ), routing (OSRM), and crime hotspot risk (real Tamil Nadu
-Police district data + ST-DBSCAN spatio-temporal clustering) into a
-single safety-ranked route list — shown on an interactive dark-mode map
-with a live crime heatmap, hotspot boundaries, waypoints, live GPS
-tracking, and a time slider.
+Safer-route planner for Tamil Nadu: FastAPI backend + React/Vite frontend.
+Candidate routes are scored on air quality, crime context and traffic, then ranked
+by a weighted score or a Pareto trade-off.
 
----
+This version combines:
+- **UI** - the look and layout of the "real crime data" project, rebuilt with the combined project's map features (`frontend/`)
+- **Logic** - the backend from the "final combined" project (`backend/`): OSRM routing with
+  waypoints and long-route sampling, OpenAQ AQI with caching, risk fusion, ST-DBSCAN hotspot model,
+  place search with Nominatim -> Photon fallback, shared HTTP client, CORS for deployment
+- **Data** - `backend/app/data/TN_district_crime_rates_2016_2023.csv` drives all crime scoring
 
-## 0. What's new in this version
+## Features
+- **Crime heatmap** with hotspot boundaries and clustered incident markers, filterable by month and time of day
+  (these points are a rate-anchored simulation, see below), plus a **District crime index** layer drawn from the real CSV
+- **Map layers**: Streets, Dark, Light, Satellite, Terrain (switcher at the top right of the map)
+- **Live location**: "My location" for the start point, live tracking that follows you, off-route detection and
+  "Recalculate from here"
+- **Voice search**: tap the mic in the Start or Destination box and say a place name
+- **Voice guidance**: spoken route summary, progress updates with distance left, off-route warning and arrival
+  (turns on live tracking for you)
+- **Travel modes with their own times**: car (routing engine), two-wheeler (estimated, up to 45 km/h average) and
+  walking (pedestrian routing when available, about 5 km/h)
+- Intermediate stops, swap start/destination, drag pins, weighted or Pareto ranking, tap a card or a route line to select it
+- Layout adapts to screen width **and** height (desktop, laptop, tablet, phone, landscape)
 
-1. **Pin locations on the map** instead of typing coordinates — click
-   "Pin on map" next to Start/Destination, then click anywhere on the
-   map. Manual lat/lon entry is still available as a fallback (see
-   "Enter coordinates manually" under each field).
-2. **Dark dashboard UI** with an interactive crime heatmap (green → yellow
-   → orange → red by density), cluster markers that expand into
-   individual incidents on zoom, hotspot boundary polygons, and a
-   **spatio-temporal time slider** (scrub by month + time-of-day band) —
-   moving it live-updates the heatmap and hotspots.
-3. **Live location**: "Use my location" (one-shot) and a "Live tracking"
-   toggle that follows your position on the map and shows a
-   "Recalculate from here" banner if you drift off the recommended route.
-4. **Map layer switcher**: Dark / Streets / Satellite / Terrain, via the
-   layers control in the top-right of the map.
-5. **Waypoints (stops)**: click "+ Add stop", then click the map to drop
-   a stop between your start and destination. Reorder with ↑/↓ or remove
-   with the Remove button — all draggable directly on the map too.
+Voice and location need Chrome or Edge and a secure origin: `http://localhost` or an `https://` site (the deployed Vercel
+URL is fine). Opening the dev server by a LAN IP over plain http will block the microphone and location.
 
----
+## Run locally
 
-## 1. Project Structure
-
-```
-routesafe-ai/
-├── backend/
-│   ├── app/
-│   │   ├── main.py                     # FastAPI entry point
-│   │   ├── config.py                   # env/config loader
-│   │   ├── crime_cache.py              # shared in-memory crime dataset cache
-│   │   ├── data/
-│   │   │   └── tn_crime_data.py        # REAL Tamil Nadu Police district crime rates
-│   │   ├── routers/
-│   │   │   ├── route_router.py         # POST /api/routes/safe-route (supports waypoints)
-│   │   │   └── crime_router.py         # GET /api/crime/heatmap, /api/crime/meta
-│   │   ├── services/
-│   │   │   ├── aqi_service.py          # OpenAQ integration
-│   │   │   ├── weather_service.py      # OpenWeatherMap integration
-│   │   │   ├── routing_service.py      # OSRM integration (multi-waypoint)
-│   │   │   └── risk_fusion.py          # scoring/ranking engine
-│   │   └── ml/
-│   │       ├── crime_hotspot_model.py  # real+synthetic crime layers, ST-DBSCAN, hotspot polygons
-│   │       └── aqi_forecast_model.py   # Prophet short-horizon forecast
-│   ├── requirements.txt
-│   ├── .env.example
-│   └── render.yaml
-└── frontend/
-    ├── src/
-    │   ├── App.jsx                     # main layout + state orchestration
-    │   ├── api.js                      # backend API client
-    │   ├── index.css                   # dark glassmorphism theme
-    │   ├── hooks/useLiveLocation.js     # geolocation (one-shot + live tracking)
-    │   ├── utils/geo.js                 # haversine + off-route drift detection
-    │   └── components/
-    │       ├── SearchPanel.jsx          # pin-on-map, waypoints, live location, ranking
-    │       ├── RouteMap.jsx             # map: layers, pins, drag, routes, live location
-    │       ├── HeatmapLayer.jsx         # leaflet.heat crime density layer
-    │       ├── IncidentClusterLayer.jsx # leaflet.markercluster incident markers
-    │       ├── HotspotPolygons.jsx      # convex-hull hotspot boundary zones
-    │       ├── TimeSlider.jsx           # month + time-of-day filter
-    │       ├── MapLegend.jsx            # heat gradient legend + layer toggles
-    │       ├── KpiBar.jsx               # top summary KPI cards
-    │       └── RouteCards.jsx           # per-route risk breakdown cards
-    ├── package.json
-    ├── vite.config.js
-    └── vercel.json
-```
-
----
-
-## 2. Get your free API keys (do this first)
-
-| Service | Used for | Sign up | Free tier |
-|---|---|---|---|
-| OpenWeatherMap | Weather | https://home.openweathermap.org/users/sign_up | 1,000 calls/day |
-| OpenAQ | Live air quality | https://explore.openaq.org/ → Account → API Keys | Generous, key required for v3 |
-| OpenRouteService | (optional, alt-route fallback) | https://openrouteservice.org/dev/#/signup | 2,000 req/day |
-
-OSRM's public routing server (`router.project-osrm.org`) needs **no key** —
-it's used directly for the main routing engine, including multi-waypoint
-routes.
-
-The crime module needs **no API key at all** — see the data note below.
-
----
-
-## 3. Crime data: Tamil Nadu (real, two-layer approach)
-
-No free, live, incident-level ("one row per crime with GPS coordinates")
-crime API exists for Tamil Nadu or India generally — this is a genuine
-data-availability gap, not a shortcut. What this project uses instead:
-
-- **Layer A — District-Level Risk Score (100% real data).** Real,
-  published Tamil Nadu Police theft/robbery/burglary rates per district
-  (sourced via the Greater Chennai Police open-data portal,
-  `data.opencity.in`), hand-entered into `backend/app/data/tn_crime_data.py`.
-  Every route segment's crime score is grounded in this real number for
-  whichever district it passes through.
-- **Layer B — Rate-Anchored Synthetic Hotspots.** Since no public source
-  publishes individual incident locations, the heatmap, cluster markers,
-  and hotspot boundary polygons on the map use synthetic points —
-  but their **density and crime-type mix per district are proportional
-  to that district's real rate** (Layer A), not uniform random noise.
-  Every incident returned by `/api/crime/heatmap` is clearly labeled
-  `"source": "rate_anchored_synthetic"`, and the endpoint includes a
-  `data_honesty_note` field for transparency in any UI built on top of it.
-
-The final route risk score blends both layers (60% real district data,
-40% synthetic street-level detail by default — see `get_risk_for_point`
-in `crime_hotspot_model.py`), so every recommendation is always grounded
-in genuine Tamil Nadu Police statistics even where finer detail is
-simulated.
-
-> If you later obtain real incident-level data (e.g. via an RTI request),
-> swap `generate_rate_anchored_synthetic_points()` for a real data loader
-> that returns a DataFrame with the same columns
-> (`latitude, longitude, hour, month, date, crime_type, severity, district`)
-> — the rest of the pipeline (ST-DBSCAN, hotspot polygons, heatmap API)
-> is dataset-agnostic and needs no other changes.
-
----
-
-## 4. Backend setup (local)
-
+Backend (Python 3.10+):
 ```bash
-cd routesafe-ai/backend
-
-# 1. Create a virtual environment (Python 3.12 recommended — see note below)
-python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-
-# 2. Install dependencies
+cd backend
+python -m venv .venv
+# Windows: .venv\Scripts\Activate.ps1      macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-
-# 3. Configure environment variables
-cp .env.example .env
-# Open .env and paste your real API keys (OpenWeatherMap, OpenAQ)
-
-# 4. Run the server
-uvicorn app.main:app --reload --port 8000
+cp .env.example .env        # add your OpenAQ / OpenWeather / ORS keys (optional)
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
+Check `http://127.0.0.1:8000/health` and `/docs`.
 
-> **Python version note:** use Python 3.11 or 3.12. Very new Python
-> versions (3.13+) often lack prebuilt wheels for numpy/pandas/scikit-learn,
-> forcing a slow source compile that needs a C++ build toolchain. 3.12 has
-> full prebuilt wheel support for every package this project uses.
-
-Visit **http://localhost:8000/docs** for the interactive Swagger UI. Try
-the two main endpoint groups directly there:
-
-**`POST /api/routes/safe-route`** — now supports an optional `waypoints`
-array:
-```json
-{
-  "start_lat": 13.0604, "start_lon": 80.2496,
-  "end_lat": 13.0067, "end_lon": 80.2206,
-  "waypoints": [{"lat": 13.035, "lon": 80.235}],
-  "mode": "car",
-  "weight_aqi": 0.33, "weight_crime": 0.34, "weight_traffic": 0.33,
-  "ranking": "weighted"
-}
-```
-
-**`GET /api/crime/heatmap?month=3&hour_min=18&hour_max=23`** — powers the
-map's heatmap/cluster/hotspot layers and the time slider. Omit `month` /
-`hour_min` + `hour_max` for all-time data.
-
-**Note on first request latency:** the first call to either endpoint
-family is slower (a few seconds) because it builds and clusters the
-crime dataset once. It's cached in memory after that (`app/crime_cache.py`).
-For production, replace this with a scheduled job (APScheduler/cron) that
-rebuilds every few hours — `get_crime_cache()` is the single place to change.
-
----
-
-## 5. Frontend setup (local)
-
-Open a **second terminal** (keep the backend running in the first):
-
+Frontend (Node 18+), in a second terminal:
 ```bash
-cd routesafe-ai/frontend
-
-# 1. Install dependencies (requires Node.js 18+)
+cd frontend
 npm install
-
-# 2. Run the dev server
 npm run dev
 ```
+Open `http://localhost:5173`. In development Vite proxies `/api` and `/health` to the backend on port 8000, so no
+settings are needed. For production set `VITE_API_BASE_URL` to the deployed backend URL (see `frontend/.env.example`).
 
-Visit **http://localhost:5173**. The Vite dev server proxies `/api` calls
-to your backend on port 8000 automatically (see `vite.config.js`).
+## Deploy
+- Backend on Render: `backend/render.yaml` (free tier; keep `WEB_CONCURRENCY=1`).
+- Frontend on Vercel: set `VITE_API_BASE_URL` to the Render URL; `frontend/vercel.json` is included.
 
----
+## How crime is scored (all from the CSV)
+1. **District layer** (`app/data/tn_crime_data.py`): for the latest year with full coverage (2023), each police unit
+   (district / city commissionerate) gets a 0-1 `crime_index` from its IPC, violent and property crime rates per lakh
+   population, each scaled between the 5th and 95th percentile and averaged. SLL cases are ignored.
+2. **Unit assignment**: each sampled route point is assigned to a city commissionerate (inside its radius) or the
+   nearest district centre. Points outside Tamil Nadu get **no** crime data; they are left out of the average and
+   reported as `crime_coverage` (if a route has no coverage at all, the state median is used and the advisory says so).
+3. **Street-level layer** (`app/ml/crime_hotspot_model.py`): synthetic incident points whose density and
+   theft/robbery/burglary mix are anchored to each unit's CSV rates, clustered with ST-DBSCAN, used for the
+   time-of-day part of scoring and for the `/api/crime/heatmap` endpoint. **These are not real incident records.**
+   Its share of the per-point score is `STREET_LAYER_WEIGHT` (default `0.4`). Set it to `0` to score crime from the
+   CSV district rates alone.
 
-## 6. How to use the app
+To use different data, replace the CSV (same columns) or set `CRIME_CSV_PATH`.
 
-1. **Set your start and destination** — click "📍 Pin on map" next to
-   either field, then click anywhere on the map, or use "🎯 Use my
-   location" to start from your current GPS position. Both markers are
-   draggable directly on the map too.
-2. **Add stops (optional)** — click "+ Add stop", then click the map.
-   Reorder with the ↑/↓ buttons or remove with "Remove".
-3. **Choose your mode of travel** — reweights how much pollution/crime
-   risk matters (a pedestrian is affected far more than a car occupant).
-4. **Choose a ranking method** — Weighted sum (use the sliders to state
-   your own priorities) or Pareto-optimal (only routes where no other
-   option is simultaneously faster, cleaner, *and* safer).
-5. **Click Find Safe Route.** The map shows up to 3 candidate routes
-   (green = top recommendation), the top bar shows live KPIs, and the
-   sidebar shows a full risk breakdown and plain-language advisory per
-   route.
-6. **Explore the crime layers** — toggle Heatmap / Incident markers /
-   Hotspot boundaries from the legend panel (top-right of the map), and
-   scrub the **time slider** (bottom of the map) by month and time-of-day
-   band to see how hotspots shift.
-7. **Switch map style** — use the layers icon (top-right of the map) for
-   Dark / Streets / Satellite / Terrain.
-8. **Live tracking** — check "Live tracking" in the sidebar to follow
-   your real position on the map. If you drift off the recommended
-   route, a banner appears with a one-click "Recalculate from here."
+## API notes
+- `POST /api/routes/safe-route` - routes include `avg_crime_score` / `max_crime_score` (0-1), `crime_breakdown`
+  (units crossed, in order), `crime_coverage`, `crime_data_source`, `risk_data_status`.
+- `GET /api/crime/meta`, `/api/crime/units`, `/api/crime/point?lat=..&lon=..` - inspect the CSV-backed scores.
+- `GET /api/crime/heatmap` - simulated incident points and hotspot polygons for the map layers.
+- `GET /api/places/search?q=...` - place search.
 
----
-
-## 7. Deploying online
-
-### Backend → Render (free tier)
-
-1. Push the `backend/` folder to a GitHub repo.
-2. Go to https://dashboard.render.com → New → Web Service → connect your repo.
-3. Render detects `render.yaml` automatically. If not, set manually:
-   - Build command: `pip install -r requirements.txt`
-   - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-4. Under **Environment**, add your API keys (same names as `.env.example`).
-5. Deploy. Note the live URL, e.g. `https://routesafe-ai-backend.onrender.com`.
-
-> Free-tier Render services spin down after inactivity — the first
-> request after idling can take ~30-50 seconds to wake up. This is normal.
-
-### Frontend → Vercel (free tier)
-
-1. Push the `frontend/` folder to a GitHub repo.
-2. Go to https://vercel.com/new → import your repo → set **Root Directory** to `frontend`.
-3. Add an environment variable: `VITE_API_BASE_URL` = your Render backend URL.
-4. Deploy. Vercel gives you a live `https://your-project.vercel.app` URL.
-
-### Update CORS
-
-Once deployed, open `backend/app/config.py` and replace the wildcard
-`"*"` in `ALLOWED_ORIGINS` with your actual Vercel URL, then redeploy.
-
----
-
-## 8. Known limitations to mention in your report/viva
-
-- **Crime data is real at the district level, but not incident-level or
-  live** — see section 3 above. This is a genuine, disclosed limitation
-  of publicly available Indian crime data, not a shortcut unique to this
-  project. An RTI request for real incident-level data is a natural next
-  step (see the RTI application drafted alongside this project).
-- **District assignment uses nearest-centroid, not real polygon
-  boundaries** — a point near a district border could be assigned to the
-  wrong district. Swapping in official district shapefiles (Survey of
-  India / data.gov.in) for point-in-polygon lookup would fix this.
-- **"Recalculate from here" is manual, not fully automatic turn-by-turn
-  rerouting** — live tracking detects drift and shows a one-click banner
-  rather than silently re-routing every few seconds, to avoid hammering
-  the routing API. This is a deliberate, disclosed scope decision.
-- **Traffic delay is currently a simplification**
-  (`traffic_delay_factor = 1.0` placeholder in `route_router.py`) — a
-  dedicated per-segment traffic API (e.g. TomTom) would make this fully
-  rigorous.
-- **OSRM's public demo server** is rate-limited — fine for a course
-  project/demo; a real deployment would self-host OSRM with local map
-  data (`.osm.pbf` + Docker). It also does not reliably support
-  alternative routes when waypoints are used, so alternatives are
-  automatically disabled whenever a request includes stops.
-
----
-
-## 9. Quick command summary
-
-```bash
-# Terminal 1 — backend
-cd routesafe-ai/backend
-source venv/bin/activate
-uvicorn app.main:app --reload --port 8000
-
-# Terminal 2 — frontend
-cd routesafe-ai/frontend
-npm run dev
-```
+## Limitations
+- CSV rates are annual and district-level: no street-level or time-of-day information. Unit boundaries are
+  approximated with reference points and city radii, not official polygons, so places near a border can fall in the
+  neighbouring unit.
+- Some 2023 columns (e.g. POCSO rape, grievous hurt) are blank in the source; the index uses only the three
+  complete metrics. Railway Police rows have no rates and are not scored.
+- Walking and two-wheeler times are estimates from distance (the public car router has no such profiles); walking
+  uses a public pedestrian router when reachable and falls back to the road route otherwise.
+- AQI is live from OpenAQ only where a station is nearby; otherwise a neutral default (60) is used. Traffic is not
+  live (delay factor fixed at 1.0).
+- This is a decision-support prototype, not a validated personal-safety service.

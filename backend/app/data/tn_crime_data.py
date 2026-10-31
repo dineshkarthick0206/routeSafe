@@ -1,126 +1,200 @@
 """
-Real Tamil Nadu crime statistics — district-level, sourced from Tamil Nadu
-Police via the Greater Chennai Police open-data portal (data.opencity.in).
+Tamil Nadu crime statistics loaded from the CSV in this folder.
 
-Source dataset: "Tamil Nadu District and Citywise Total Theft and Robbery
-Cases Data" — https://data.opencity.in/dataset/tamil-nadu-crime-data
-Original source: https://tnpolice.gov.in
-Fields: Incidents (I), Victims (V), Crime Rate per lakh population (R)
+Source file: TN_district_crime_rates_2016_2023.csv
+  - Tamil Nadu Police district / city-commissionerate crime rates per lakh
+    population. 2016-2022 from the original table, 2023 from "Crime Review
+    Tamil Nadu 2023".
 
-This is REAL, sourced, district-level annual crime data — not synthetic.
-It is aggregate (one row per district per year), not incident-level with
-GPS coordinates, which is the genuine limitation of publicly available
-Indian crime data compared to something like Chicago's incident-level feed.
-See app/ml/crime_hotspot_model.py for how this is used (Layer A), and how
-individual incident points shown on the map are statistically anchored to
-these real rates but are ultimately synthetic (Layer B).
+Nothing is hardcoded here any more: every number comes from the CSV, so
+updating the file (or pointing CRIME_CSV_PATH at another one) updates the app.
+
+What this module provides (Layer A in app/ml/crime_hotspot_model.py):
+  * UNITS             - one record per police unit for the reference year
+  * UNIT_COORDINATES  - approximate reference point per unit (the CSV has no
+                        coordinates, so these are hand-placed centres)
+  * assign_unit()     - which unit a lat/lon falls in (or None outside TN)
+  * crime_index       - 0..1 per unit from IPC, violent and property crime
+                        rates (each scaled between the 5th and 95th percentile
+                        so a single outlier does not flatten everyone else,
+                        then averaged). SLL cases are ignored: they mostly
+                        reflect enforcement drives, not risk to a traveller.
+
+Limits: rates are annual and district-level; unit boundaries are approximated
+with reference points and city radii, not official polygons.
 """
+import csv
+import math
+import os
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-TN_DISTRICT_CRIME_RATES = {
-    "Ariyalur":            {"theft_rate": 9.6,  "robbery_rate": 2.3, "burglary_rate": 6.6},
-    "Chennai":             {"theft_rate": 56.1, "robbery_rate": 8.4, "burglary_rate": 9.9},
-    "Coimbatore":          {"theft_rate": 8.5,  "robbery_rate": 2.3, "burglary_rate": 7.9},
-    "Coimbatore City":     {"theft_rate": 46.2, "robbery_rate": 7.8, "burglary_rate": 14.7},
-    "Cuddalore":           {"theft_rate": 9.1,  "robbery_rate": 1.3, "burglary_rate": 5.7},
-    "Dharmapuri":          {"theft_rate": 6.9,  "robbery_rate": 0.9, "burglary_rate": 3.4},
-    "Dindigul":            {"theft_rate": 11.4, "robbery_rate": 1.7, "burglary_rate": 5.8},
-    "Erode":               {"theft_rate": 12.4, "robbery_rate": 1.3, "burglary_rate": 4.4},
-    "Kanchipuram":         {"theft_rate": 17.4, "robbery_rate": 6.7, "burglary_rate": 11.4},
-    "Kanyakumari":         {"theft_rate": 21.3, "robbery_rate": 2.0, "burglary_rate": 9.3},
-    "Karur":               {"theft_rate": 11.3, "robbery_rate": 2.7, "burglary_rate": 6.1},
-    "Krishnagiri":         {"theft_rate": 8.5,  "robbery_rate": 1.7, "burglary_rate": 5.5},
-    "Madurai":             {"theft_rate": 18.7, "robbery_rate": 6.5, "burglary_rate": 8.9},
-    "Madurai City":        {"theft_rate": 41.7, "robbery_rate": 10.6, "burglary_rate": 10.9},
-    "Nagapattinam":        {"theft_rate": 8.5,  "robbery_rate": 1.6, "burglary_rate": 4.8},
-    "Namakkal":            {"theft_rate": 6.4,  "robbery_rate": 1.4, "burglary_rate": 4.4},
-    "Nilgiris":            {"theft_rate": 6.2,  "robbery_rate": 0.5, "burglary_rate": 5.6},
-    "Perambalur":          {"theft_rate": 21.5, "robbery_rate": 5.5, "burglary_rate": 13.8},
-    "Pudukottai":          {"theft_rate": 16.4, "robbery_rate": 2.3, "burglary_rate": 5.9},
-    "Ramanathapuram":      {"theft_rate": 15.9, "robbery_rate": 3.8, "burglary_rate": 11.7},
-    "Salem":               {"theft_rate": 5.8,  "robbery_rate": 1.3, "burglary_rate": 3.8},
-    "Salem City":          {"theft_rate": 31.8, "robbery_rate": 6.7, "burglary_rate": 6.8},
-    "Sivagangai":          {"theft_rate": 13.0, "robbery_rate": 4.0, "burglary_rate": 6.3},
-    "Thanjavur":           {"theft_rate": 11.3, "robbery_rate": 4.0, "burglary_rate": 6.9},
-    "Theni":               {"theft_rate": 10.3, "robbery_rate": 1.4, "burglary_rate": 6.7},
-    "Tirunelveli":         {"theft_rate": 17.8, "robbery_rate": 2.1, "burglary_rate": 12.0},
-    "Tirunelveli City":    {"theft_rate": 28.5, "robbery_rate": 4.1, "burglary_rate": 7.6},
-    "Thiruvallur":         {"theft_rate": 5.9,  "robbery_rate": 2.2, "burglary_rate": 4.9},
-    "Tiruvannamalai":      {"theft_rate": 6.9,  "robbery_rate": 2.1, "burglary_rate": 3.1},
-    "Thiruvarur":          {"theft_rate": 6.0,  "robbery_rate": 2.5, "burglary_rate": 5.1},
-    "Thoothukudi":         {"theft_rate": 16.9, "robbery_rate": 2.5, "burglary_rate": 9.2},
-    "Tiruppur":            {"theft_rate": 11.9, "robbery_rate": 2.7, "burglary_rate": 5.9},
-    "Tiruppur City":       {"theft_rate": 30.6, "robbery_rate": 8.4, "burglary_rate": 13.7},
-    "Trichy":              {"theft_rate": 17.2, "robbery_rate": 3.0, "burglary_rate": 8.6},
-    "Trichy City":         {"theft_rate": 26.2, "robbery_rate": 4.1, "burglary_rate": 6.6},
-    "Vellore":             {"theft_rate": 9.5,  "robbery_rate": 2.3, "burglary_rate": 3.7},
-    "Villupuram":          {"theft_rate": 11.1, "robbery_rate": 2.6, "burglary_rate": 5.6},
-    "Virudhunagar":        {"theft_rate": 9.5,  "robbery_rate": 2.0, "burglary_rate": 4.6},
-    "Chengalpattu":        {"theft_rate": 6.4,  "robbery_rate": 2.2, "burglary_rate": 3.2},
-    "Kallakurichi":        {"theft_rate": 7.7,  "robbery_rate": 2.1, "burglary_rate": 4.7},
-    "Ranipet":             {"theft_rate": 11.7, "robbery_rate": 2.7, "burglary_rate": 3.1},
-    "Tirupattur":          {"theft_rate": 10.6, "robbery_rate": 2.0, "burglary_rate": 4.4},
-    "Tenkasi":             {"theft_rate": 12.3, "robbery_rate": 0.9, "burglary_rate": 8.7},
+CSV_PATH = Path(os.getenv(
+    "CRIME_CSV_PATH",
+    Path(__file__).resolve().parent / "TN_district_crime_rates_2016_2023.csv",
+))
+
+INDEX_METRICS = ("IPC_Crime_Rate", "Rate_TOTAL_Violent_Crimes", "Rate_TOTAL_Property_Crimes")
+
+# Outside this box, farther than MAX_UNIT_DISTANCE_KM from every unit centre,
+# or inside a non-TN enclave -> no crime data (not scored, not guessed).
+TN_BBOX = (7.9, 13.7, 76.1, 80.5)  # lat_min, lat_max, lon_min, lon_max
+MAX_UNIT_DISTANCE_KM = 65.0
+NON_TN_ENCLAVES = {"Puducherry": (11.9416, 79.8083, 14.0), "Karaikal": (10.9254, 79.8380, 8.0)}
+
+# City commissionerates: (lat, lon, radius_km). A point inside the radius is
+# assigned to the city, otherwise to the nearest district centre below.
+CITY_UNITS = {
+    "Chennai": (13.0827, 80.2707, 13.0),
+    "Avadi": (13.1067, 80.0970, 6.5),
+    "Tambaram": (12.9249, 80.1000, 7.5),
+    "Coimbatore City": (11.0168, 76.9558, 9.0),
+    "Madurai City": (9.9252, 78.1198, 8.0),
+    "Salem City": (11.6643, 78.1460, 6.5),
+    "Tiruppur City": (11.1085, 77.3411, 6.5),
+    "Trichy City": (10.8050, 78.6856, 8.0),
+    "Thirunelveli City": (8.7139, 77.7567, 6.0),
+}
+# District centres (names match the CSV spelling).
+DISTRICT_CENTRES = {
+    "Ariyalur": (11.14, 79.08), "Chengalpattu": (12.60, 79.95), "Coimbatore": (10.90, 77.00),
+    "Cuddalore": (11.60, 79.60), "Dharmapuri": (12.15, 78.15), "Dindigul": (10.40, 77.90),
+    "Erode": (11.35, 77.58), "Kallakurichi": (11.75, 78.95), "Kanchipuram": (12.85, 79.70),
+    "Kanyakumari": (8.30, 77.30), "Karur": (10.95, 78.10), "Krishnagiri": (12.55, 78.20),
+    "Madurai": (10.00, 78.15), "Mayiladuthurai": (11.10, 79.60), "Nagapattinam": (10.75, 79.80),
+    "Namakkal": (11.25, 78.15), "Nilgiris": (11.40, 76.70), "Perambalur": (11.25, 78.85),
+    "Pudukottai": (10.30, 78.85), "Ramnathapuram": (9.35, 78.85), "Ranipet": (12.98, 79.50),
+    "Salem": (11.60, 78.20), "Sivagangai": (9.85, 78.50), "Tenkasi": (9.00, 77.30),
+    "Thanjavur": (10.75, 79.20), "Theni": (10.00, 77.50), "Thirunelveli": (8.55, 77.70),
+    "Thiruvallur": (13.25, 80.00), "Thiruvannamalai": (12.30, 79.10), "Thiruvarur": (10.80, 79.55),
+    "Thoothukudi": (8.85, 78.10), "Tiruppattur": (12.55, 78.55), "Tiruppur": (10.95, 77.45),
+    "Trichy": (10.85, 78.55), "Vellore": (12.93, 79.05), "Villupuram": (11.95, 79.55),
+    "Virudhunagar": (9.55, 77.95),
 }
 
-# District headquarters / centroid coordinates (public knowledge).
-TN_DISTRICT_COORDINATES = {
-    "Ariyalur":            (11.1401, 79.0782),
-    "Chennai":             (13.0827, 80.2707),
-    "Coimbatore":          (11.0168, 76.9558),
-    "Coimbatore City":     (11.0168, 76.9558),
-    "Cuddalore":           (11.7480, 79.7714),
-    "Dharmapuri":          (12.1211, 78.1582),
-    "Dindigul":            (10.3673, 77.9803),
-    "Erode":               (11.3410, 77.7172),
-    "Kanchipuram":         (12.8342, 79.7036),
-    "Kanyakumari":         (8.0883,  77.5385),
-    "Karur":               (10.9601, 78.0766),
-    "Krishnagiri":         (12.5266, 78.2150),
-    "Madurai":             (9.9252,  78.1198),
-    "Madurai City":        (9.9252,  78.1198),
-    "Nagapattinam":        (10.7672, 79.8449),
-    "Namakkal":            (11.2189, 78.1677),
-    "Nilgiris":            (11.4916, 76.7337),
-    "Perambalur":          (11.2342, 78.8807),
-    "Pudukottai":          (10.3813, 78.8213),
-    "Ramanathapuram":      (9.3639,  78.8395),
-    "Salem":               (11.6643, 78.1460),
-    "Salem City":          (11.6643, 78.1460),
-    "Sivagangai":          (9.8433,  78.4809),
-    "Thanjavur":           (10.7870, 79.1378),
-    "Theni":               (10.0104, 77.4768),
-    "Tirunelveli":         (8.7139,  77.7567),
-    "Tirunelveli City":    (8.7139,  77.7567),
-    "Thiruvallur":         (13.1231, 79.9120),
-    "Tiruvannamalai":      (12.2253, 79.0747),
-    "Thiruvarur":          (10.7661, 79.6345),
-    "Thoothukudi":         (8.7642,  78.1348),
-    "Tiruppur":            (11.1085, 77.3411),
-    "Tiruppur City":       (11.1085, 77.3411),
-    "Trichy":              (10.7905, 78.7047),
-    "Trichy City":         (10.7905, 78.7047),
-    "Vellore":             (12.9165, 79.1325),
-    "Villupuram":          (11.9401, 79.4861),
-    "Virudhunagar":        (9.5810,  77.9624),
-    "Chengalpattu":        (12.6819, 79.9888),
-    "Kallakurichi":        (11.7382, 78.9584),
-    "Ranipet":             (12.9249, 79.3308),
-    "Tirupattur":          (12.4950, 78.5678),
-    "Tenkasi":             (8.9605,  77.3152),
+UNIT_COORDINATES: Dict[str, Tuple[float, float]] = {
+    **{n: (v[0], v[1]) for n, v in CITY_UNITS.items()},
+    **DISTRICT_CENTRES,
 }
 
-# Ranipet and Tirupattur were carved out of the erstwhile Vellore district
-# in 2019 — kept as neighbours here since Vellore-focused routing/analysis
-# often needs to consider them together.
-VELLORE_REGION_DISTRICTS = ["Vellore", "Ranipet", "Tirupattur"]
+UNITS: Dict[str, dict] = {}
+META: dict = {}
 
 
-def get_composite_crime_rate(district: str) -> float:
-    """Theft + 2x Robbery (confrontational, weighted higher) + Burglary."""
-    rates = TN_DISTRICT_CRIME_RATES.get(district)
-    if not rates:
-        return 0.0
-    return round(rates["theft_rate"] * 1.0 + rates["robbery_rate"] * 2.0 + rates["burglary_rate"] * 1.0, 2)
+def haversine_km(lat1, lon1, lat2, lon2):
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 6371.0 * 2 * math.asin(math.sqrt(a))
 
 
-MAX_COMPOSITE_RATE = max(get_composite_crime_rate(d) for d in TN_DISTRICT_CRIME_RATES)
+def _percentile(sorted_vals: List[float], q: float) -> float:
+    k = (len(sorted_vals) - 1) * q
+    lo, hi = math.floor(k), math.ceil(k)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo)
+
+
+def _num(x) -> Optional[float]:
+    try:
+        return float(x) if x not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def load() -> None:
+    """Read the CSV and compute the per-unit crime index (idempotent)."""
+    if UNITS:
+        return
+    with open(CSV_PATH, newline="", encoding="utf-8-sig") as fh:
+        rows = list(csv.DictReader(fh))
+    known = set(UNIT_COORDINATES)
+    needed = INDEX_METRICS + ("Rate_Theft", "Rate_Robbery", "Rate_Burglary")
+    complete = [r for r in rows
+                if r["District_or_Unit"] in known and all(_num(r[m]) is not None for m in needed)]
+    by_year: Dict[int, List[dict]] = {}
+    for r in complete:
+        by_year.setdefault(int(r["Year"]), []).append(r)
+    # Latest year that covers (almost) every unit.
+    ref_year = max(y for y, rs in by_year.items() if len(rs) >= 30)
+    ref_rows = by_year[ref_year]
+
+    bounds = {}
+    for m in INDEX_METRICS:
+        vals = sorted(_num(r[m]) for r in ref_rows)
+        bounds[m] = (_percentile(vals, 0.05), _percentile(vals, 0.95))
+
+    def scaled(r, m):
+        lo, hi = bounds[m]
+        return min(1.0, max(0.0, (_num(r[m]) - lo) / (hi - lo))) if hi > lo else 0.0
+
+    for r in ref_rows:
+        name = r["District_or_Unit"]
+        UNITS[name] = {
+            "unit": name,
+            "unit_type": r["Unit_Type"],
+            "year": ref_year,
+            "population_lakh": _num(r["Population_lakh"]),
+            "ipc_crime_rate": _num(r["IPC_Crime_Rate"]),
+            "violent_crime_rate": _num(r["Rate_TOTAL_Violent_Crimes"]),
+            "property_crime_rate": _num(r["Rate_TOTAL_Property_Crimes"]),
+            "theft_rate": _num(r["Rate_Theft"]),
+            "robbery_rate": _num(r["Rate_Robbery"]),
+            "burglary_rate": _num(r["Rate_Burglary"]),
+            "crime_index": round(sum(scaled(r, m) for m in INDEX_METRICS) / len(INDEX_METRICS), 3),
+        }
+    scores = sorted(u["crime_index"] for u in UNITS.values())
+    META.update({
+        "source_csv": CSV_PATH.name,
+        "reference_year": ref_year,
+        "units_scored": len(UNITS),
+        "index_metrics": list(INDEX_METRICS),
+        "median_index": round(_percentile(scores, 0.5), 3),
+        "units_without_centre": sorted(
+            {r["District_or_Unit"] for r in rows if int(r["Year"]) == ref_year
+             and not r["District_or_Unit"].startswith("TAMIL NADU")} - known),
+    })
+
+
+def assign_unit(lat: float, lon: float) -> Optional[str]:
+    """Police unit for a coordinate, or None if outside Tamil Nadu coverage."""
+    load()
+    la0, la1, lo0, lo1 = TN_BBOX
+    if not (la0 <= lat <= la1 and lo0 <= lon <= lo1):
+        return None
+    for clat, clon, radius in NON_TN_ENCLAVES.values():
+        if haversine_km(lat, lon, clat, clon) <= radius:
+            return None
+    best_city, best_ratio = None, 1.0
+    for name, (clat, clon, radius) in CITY_UNITS.items():
+        if name not in UNITS:
+            continue
+        ratio = haversine_km(lat, lon, clat, clon) / radius
+        if ratio < best_ratio:
+            best_city, best_ratio = name, ratio
+    if best_city:
+        return best_city
+    candidates = {n: c for n, c in DISTRICT_CENTRES.items() if n in UNITS}
+    nearest = min(candidates, key=lambda n: haversine_km(lat, lon, *candidates[n]))
+    if haversine_km(lat, lon, *candidates[nearest]) > MAX_UNIT_DISTANCE_KM:
+        return None
+    return nearest
+
+
+def get_unit(name: str) -> Optional[dict]:
+    load()
+    return UNITS.get(name)
+
+
+def meta() -> dict:
+    load()
+    return dict(META)
+
+
+def all_units() -> List[dict]:
+    """All scored units (with their map reference point), highest crime index first."""
+    load()
+    out = []
+    for u in UNITS.values():
+        lat, lon = UNIT_COORDINATES[u["unit"]]
+        out.append({**u, "lat": lat, "lon": lon})
+    return sorted(out, key=lambda u: -u["crime_index"])

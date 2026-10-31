@@ -12,7 +12,9 @@ GET /api/crime/heatmap?month=3&hour_min=18&hour_max=23
 from fastapi import APIRouter, Query
 from typing import Optional
 
+from fastapi import HTTPException
 from app.ml import crime_hotspot_model
+from app.data import tn_crime_data
 from app.crime_cache import get_crime_cache
 
 router = APIRouter(prefix="/api/crime", tags=["crime"])
@@ -20,11 +22,11 @@ router = APIRouter(prefix="/api/crime", tags=["crime"])
 MAX_INCIDENTS_RETURNED = 3000
 
 DATA_HONESTY_NOTE = (
-    "District-level risk (used for route scoring) is real data published by "
-    "Tamil Nadu Police. The individual incident points, hotspot boundaries, "
-    "and dates/times shown on this map are synthetic, statistically anchored "
-    "to those real district crime rates and category mixes — not actual "
-    "incident records. See the project README for the full data-honesty note."
+    "District-level risk (used for route scoring) comes from the Tamil Nadu "
+    "Police crime-rate CSV supplied with this project. The individual incident "
+    "points, hotspot boundaries, and dates/times on the map are synthetic, "
+    "statistically anchored to those district rates and their theft / robbery / "
+    "burglary mix - not actual incident records."
 )
 
 
@@ -75,8 +77,24 @@ async def get_crime_meta():
     cache = await get_crime_cache()
     incidents = cache["incidents"]
     return {
+        **tn_crime_data.meta(),
         "total_incidents": int(len(incidents)),
         "districts_covered": int(incidents["district"].nunique()),
         "built_at": cache["built_at"].isoformat() if cache["built_at"] else None,
         "data_honesty_note": DATA_HONESTY_NOTE,
     }
+
+
+@router.get("/units")
+async def get_crime_units():
+    """All scored police units from the CSV, highest crime index first."""
+    return tn_crime_data.all_units()
+
+
+@router.get("/point")
+async def get_crime_point(lat: float = Query(...), lon: float = Query(...)):
+    """CSV-based district risk for one coordinate (handy for checking unit assignment)."""
+    result = crime_hotspot_model.get_district_risk_score(lat, lon)
+    if result["risk_score"] is None:
+        raise HTTPException(404, "No crime data for this location (outside Tamil Nadu coverage).")
+    return result

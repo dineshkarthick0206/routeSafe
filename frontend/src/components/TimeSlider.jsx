@@ -2,7 +2,7 @@ import React from "react";
 
 const MONTHS = ["All", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-const HOUR_BANDS = [
+export const HOUR_BANDS = [
   { key: "all", label: "All day", range: null },
   { key: "morning", label: "Morning", sub: "6AM–11AM", range: [6, 11] },
   { key: "afternoon", label: "Afternoon", sub: "12PM–4PM", range: [12, 16] },
@@ -14,26 +14,32 @@ export default function TimeSlider({ month, onMonthChange, hourBandKey, onHourBa
   const activeBand = HOUR_BANDS.find((b) => b.key === hourBandKey) || HOUR_BANDS[0];
 
   return (
-    <div className="time-slider glass-panel">
-      <div className="time-slider-row">
-        <div className="time-slider-month">
-          <input
-            type="range"
-            min={0}
-            max={12}
-            step={1}
-            value={month}
-            onChange={(e) => onMonthChange(Number(e.target.value))}
-          />
-          <div className="time-slider-ticks">
-            {MONTHS.map((m, i) => (
-              <span key={m} className={i === month ? "tick active" : "tick"}>{m}</span>
-            ))}
-          </div>
+    <div className="time-filter">
+      <div className="time-filter-title">
+        <span className="eyebrow">TIME FILTER</span>
+        <span className="time-filter-readout">
+          <b>{MONTHS[month]}</b> · <b>{activeBand.label}</b>
+          {activeBand.sub ? ` (${activeBand.sub})` : ""}
+          {typeof totalIncidents === "number" ? ` · ${totalIncidents.toLocaleString()} points` : ""}
+        </span>
+      </div>
+      <div className="time-filter-month">
+        <input
+          type="range"
+          min={0}
+          max={12}
+          step={1}
+          value={month}
+          onChange={(e) => onMonthChange(Number(e.target.value))}
+          aria-label="Month filter"
+        />
+        <div className="month-ticks" aria-hidden="true">
+          {MONTHS.map((m, i) => (
+            <span key={m} className={i === month ? "tick active" : "tick"}>{m}</span>
+          ))}
         </div>
       </div>
-
-      <div className="time-slider-row time-slider-bands">
+      <div className="band-row" role="group" aria-label="Time of day">
         {HOUR_BANDS.map((b) => (
           <button
             key={b.key}
@@ -45,15 +51,6 @@ export default function TimeSlider({ month, onMonthChange, hourBandKey, onHourBa
           </button>
         ))}
       </div>
-
-      <div className="time-slider-readout">
-        Showing: <strong>{MONTHS[month]}</strong> &middot; <strong>{activeBand.label}{activeBand.sub ? ` (${activeBand.sub})` : ""}</strong>
-        {typeof totalIncidents === "number" && (
-          <span className="time-slider-count"> &nbsp;·&nbsp; {totalIncidents} incidents in view</span>
-        )}
-      </div>
     </div>
   );
 }
-
-export { HOUR_BANDS };

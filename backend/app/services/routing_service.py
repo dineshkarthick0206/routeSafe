@@ -16,10 +16,19 @@ from app.config import settings
 from app.http_client import get_client
 
 OSRM_BASE_URL = "https://router.project-osrm.org/route/v1/driving"
+# Public pedestrian routing (OSM-based, same OSRM API; the path says "driving"
+# on that server but the profile behind it is foot).
+FOOT_BASE_URL = "https://routing.openstreetmap.de/routed-foot/route/v1/driving"
+
+# The OSRM demo server only has a car profile, so travel time for the other
+# modes is estimated from distance:
+WALK_SPEED_KMH = 5.0
+TWO_WHEELER_MAX_KMH = 45.0  # average ceiling for a motorbike / scooter
 ORS_BASE_URL = "https://api.openrouteservice.org/v2/directions/driving-car"
 
 
-async def get_routes_osrm(start_lat, start_lon, end_lat, end_lon, waypoints=None, alternatives=True):
+async def get_routes_osrm(start_lat, start_lon, end_lat, end_lon, waypoints=None, alternatives=True,
+                          base_url=OSRM_BASE_URL):
     """
     OSRM expects coordinates as lon,lat (note the order!).
     `waypoints`, if given, is a list of (lat, lon) via-points visited in
@@ -33,7 +42,7 @@ async def get_routes_osrm(start_lat, start_lon, end_lat, end_lon, waypoints=None
     coords = ";".join(f"{lon},{lat}" for lat, lon in all_points)
     use_alternatives = alternatives and not waypoints
 
-    url = f"{OSRM_BASE_URL}/{coords}"
+    url = f"{base_url}/{coords}"
     params = {
         "overview": "full",
         "geometries": "polyline",
@@ -59,15 +68,46 @@ async def get_routes_osrm(start_lat, start_lon, end_lat, end_lon, waypoints=None
     return routes
 
 
-async def get_routes(start_lat, start_lon, end_lat, end_lon, waypoints=None):
+def apply_mode_duration(routes, mode):
     """
-    Main entry point. Tries OSRM first (free, unlimited-ish); if it fails,
-    could fall back to ORS (not implemented here to keep the demo simple,
-    but the function signature is ready for it).
+    Replace the car duration with a mode-appropriate estimate.
+      walking     -> distance / 5 km/h
+      two_wheeler -> distance / min(car average speed, 45 km/h)
+      car         -> unchanged (OSRM's own duration)
     """
-    routes = await get_routes_osrm(start_lat, start_lon, end_lat, end_lon, waypoints=waypoints)
-    # Limit to configured number of alternatives
-    return routes[: settings.NUM_ROUTE_ALTERNATIVES]
+    for r in routes:
+        km = r["distance_m"] / 1000.0
+        if mode == "walking":
+            r["duration_s"] = km / WALK_SPEED_KMH * 3600.0
+        elif mode == "two_wheeler" and r["duration_s"] > 0:
+            car_kmh = km / (r["duration_s"] / 3600.0)
+            r["duration_s"] = km / min(car_kmh, TWO_WHEELER_MAX_KMH) * 3600.0
+    return routes
+
+
+async def get_routes(start_lat, start_lon, end_lat, end_lon, waypoints=None, mode="car"):
+    """
+    Main entry point.
+    - walking: tries the public pedestrian router first (real footpaths); if it
+      is unreachable, falls back to the road route and says so via
+      route["profile"] == "driving_estimate".
+    - car / two_wheeler: OSRM road routes. Durations are then adjusted per mode.
+    """
+    routes = None
+    if mode == "walking":
+        try:
+            routes = await get_routes_osrm(start_lat, start_lon, end_lat, end_lon,
+                                           waypoints=waypoints, base_url=FOOT_BASE_URL)
+            for r in routes:
+                r["profile"] = "foot"
+        except Exception:
+            routes = None
+    if routes is None:
+        routes = await get_routes_osrm(start_lat, start_lon, end_lat, end_lon, waypoints=waypoints)
+        for r in routes:
+            r["profile"] = "driving_estimate" if mode != "car" else "driving"
+    routes = routes[: settings.NUM_ROUTE_ALTERNATIVES]
+    return apply_mode_duration(routes, mode)
 
 
 MAX_SAMPLE_POINTS = 15  # hard ceiling regardless of route length

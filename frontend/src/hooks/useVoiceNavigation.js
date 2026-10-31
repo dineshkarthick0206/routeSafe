@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { haversineMeters } from "../utils/geo";
+import { haversineMeters, nearestVertex, spokenDuration } from "../utils/geo";
 
-export default function useVoiceNavigation({ enabled, position, route, destination }) {
-  const [supported] = useState(() =>
-    typeof window !== "undefined" && "speechSynthesis" in window
+// Spoken guidance while live-tracking along the selected route:
+// start summary, progress milestones with distance left, off-route warning,
+// arrival. (Text-to-speech via the browser's speechSynthesis; no turn-by-turn
+// instructions, since the routing service is asked for geometry only.)
+export default function useVoiceNavigation({ enabled, position, route, destination, offRoute }) {
+  const [supported] = useState(
+    () => typeof window !== "undefined" && "speechSynthesis" in window
   );
-  const [status, setStatus] = useState("Voice navigation is off");
-  const lastProgressRef = useRef(-1);
+  const [status, setStatus] = useState("Voice guidance is off");
+  const lastMilestoneRef = useRef(-1);
   const startedRef = useRef(false);
   const arrivedRef = useRef(false);
+  const offRouteSpokenRef = useRef(false);
 
   const speak = (text) => {
     if (!supported || !text) return;
@@ -19,71 +24,67 @@ export default function useVoiceNavigation({ enabled, position, route, destinati
     window.speechSynthesis.speak(utterance);
   };
 
+  // Reset when switched off or when a different route is chosen.
   useEffect(() => {
+    startedRef.current = false;
+    arrivedRef.current = false;
+    lastMilestoneRef.current = -1;
+    offRouteSpokenRef.current = false;
     if (!enabled) {
       window.speechSynthesis?.cancel();
-      startedRef.current = false;
-      arrivedRef.current = false;
-      lastProgressRef.current = -1;
-      setStatus("Voice navigation is off");
-      return;
+      setStatus("Voice guidance is off");
     }
+  }, [enabled, route]);
 
+  useEffect(() => () => window.speechSynthesis?.cancel(), []);
+
+  useEffect(() => {
+    if (!enabled) return;
     if (!supported) {
-      setStatus("Voice navigation is not supported in this browser");
+      setStatus("Voice guidance is not supported in this browser");
       return;
     }
-
     if (!route?.geometry?.length || !position) {
-      setStatus("Waiting for route and live location...");
+      setStatus("Waiting for a route and your live location...");
       return;
     }
 
     if (!startedRef.current) {
       startedRef.current = true;
-      setStatus("Voice navigation started");
-      speak("Voice navigation started. Follow the highlighted safe route.");
+      setStatus("Guiding you along the selected route");
+      speak(
+        `Voice guidance started. The route is ${route.distance_km} kilometres, about ${spokenDuration(route.duration_min)}. Follow the highlighted route.`
+      );
     }
 
-    const geometry = route.geometry;
-    let nearestIndex = 0;
-    let nearestDistance = Infinity;
-
-    geometry.forEach((point, index) => {
-      const distance = haversineMeters(
-        [position.lat, position.lon],
-        point
-      );
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearestIndex = index;
-      }
-    });
-
-    const progress = geometry.length > 1
-      ? nearestIndex / (geometry.length - 1)
-      : 1;
+    const here = [position.lat, position.lon];
+    const { index } = nearestVertex(here, route.geometry);
+    const progress = route.geometry.length > 1 ? index / (route.geometry.length - 1) : 1;
+    const remainingKm = Math.max(0, route.distance_km * (1 - progress));
 
     const milestone = Math.floor(progress * 4);
-    if (milestone > lastProgressRef.current && milestone < 4) {
-      lastProgressRef.current = milestone;
-      if (milestone === 1) speak("You are about one quarter of the way to your destination.");
-      if (milestone === 2) speak("You are halfway to your destination.");
-      if (milestone === 3) speak("You are about three quarters of the way to your destination.");
+    if (milestone > lastMilestoneRef.current && milestone > 0 && milestone < 4) {
+      lastMilestoneRef.current = milestone;
+      const where = ["", "one quarter of the way", "halfway", "three quarters of the way"][milestone];
+      speak(`You are ${where} there. About ${Math.round(remainingKm)} kilometres remaining.`);
+    }
+
+    if (offRoute && !offRouteSpokenRef.current) {
+      offRouteSpokenRef.current = true;
+      speak("You seem to be off the recommended route. You can recalculate from here.");
+    } else if (!offRoute) {
+      offRouteSpokenRef.current = false;
     }
 
     if (destination && !arrivedRef.current) {
-      const distanceToDestination = haversineMeters(
-        [position.lat, position.lon],
-        destination
-      );
-      if (distanceToDestination <= 60) {
+      if (haversineMeters(here, [destination.lat, destination.lon]) <= 60) {
         arrivedRef.current = true;
         setStatus("You have arrived");
         speak("You have arrived at your destination.");
       }
     }
-  }, [enabled, supported, position, route, destination]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, supported, position, route, destination, offRoute]);
 
   return { supported, status, speak };
 }

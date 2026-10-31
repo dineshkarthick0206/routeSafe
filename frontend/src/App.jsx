@@ -1,66 +1,93 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RouteMap from "./components/RouteMap";
 import SearchPanel from "./components/SearchPanel";
 import RouteCards from "./components/RouteCards";
 import KpiBar from "./components/KpiBar";
-import TimeSlider from "./components/TimeSlider";
-import MapLegend from "./components/MapLegend";
+import TimeSlider, { HOUR_BANDS } from "./components/TimeSlider";
+import LayerPanel from "./components/LayerPanel";
 import useLiveLocation from "./hooks/useLiveLocation";
 import useVoiceNavigation from "./hooks/useVoiceNavigation";
 import { distanceToPolylineMeters } from "./utils/geo";
-import { getSafeRoutes, getCrimeHeatmap } from "./api";
+import { getSafeRoutes, getCrimeHeatmap, getCrimeUnits, healthCheck } from "./api";
 
-let waypointIdCounter = 1;
+let waypointId = 1;
 
-// Meters of drift from the active route before we surface a "recalculate?" banner.
+// Meters of drift from the selected route before offering "Recalculate from here".
 const DRIFT_THRESHOLD_M = { car: 150, two_wheeler: 100, walking: 40 };
 
-export default function App() {
-  // --- Location state -----------------------------------------------
-  const [startPoint, setStartPoint] = useState(null);
-  const [endPoint, setEndPoint] = useState(null);
-  const [waypoints, setWaypoints] = useState([]);
-  const [pickingMode, setPickingMode] = useState(null);
+// Move one slider and spread the remainder over the other two so they total 100.
+function rebalance(prev, key, value) {
+  const others = Object.keys(prev).filter((k) => k !== key);
+  const remaining = 100 - value;
+  const sum = others.reduce((s, k) => s + prev[k], 0);
+  const next = { ...prev, [key]: value };
+  if (sum === 0) {
+    next[others[0]] = remaining;
+    next[others[1]] = 0;
+  } else {
+    const first = Math.round((remaining * prev[others[0]]) / sum);
+    next[others[0]] = first;
+    next[others[1]] = remaining - first;
+  }
+  return next;
+}
 
-  // --- Search params ---------------------------------------------------
+function explainError(e) {
+  if (e.code === "ECONNABORTED") {
+    return "The request timed out. Long routes can take a while and a free server may be waking up — please try again.";
+  }
+  if (e.response?.status === 504) return e.response.data?.detail || "Route analysis timed out. Please try again.";
+  if (e.response) return `Server error (${e.response.status}): ${e.response.data?.detail || "please try again."}`;
+  return "Can't reach the backend. Check that the server is running and your internet connection.";
+}
+
+export default function App() {
+  // --- Places ------------------------------------------------------------
+  const [start, setStart] = useState(null); // { lat, lon, label? }
+  const [end, setEnd] = useState(null);
+  const [waypoints, setWaypoints] = useState([]);
+  const [pickingMode, setPickingMode] = useState(null); // start | end | waypoint | null
+
+  // --- Options -----------------------------------------------------------
   const [mode, setMode] = useState("car");
   const [ranking, setRanking] = useState("weighted");
-  const [weightAqi, setWeightAqi] = useState(33);
-  const [weightCrime, setWeightCrime] = useState(34);
-  const [weightTraffic, setWeightTraffic] = useState(33);
+  const [weights, setWeights] = useState({ aqi: 33, crime: 34, traffic: 33 });
 
-  // --- Results ----------------------------------------------------------
+  // --- Results -----------------------------------------------------------
   const [routes, setRoutes] = useState([]);
+  const [selected, setSelected] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [apiStatus, setApiStatus] = useState("checking");
+  const resultsRef = useRef(null);
 
-  // --- Live location ------------------------------------------------
+  // --- Live location & voice ---------------------------------------------
   const live = useLiveLocation();
-  const [locatingOnce, setLocatingOnce] = useState(false);
+  const [locating, setLocating] = useState(false);
   const [liveTracking, setLiveTracking] = useState(false);
-  const [driftedOffRoute, setDriftedOffRoute] = useState(false);
-  const [voiceNavigation, setVoiceNavigation] = useState(false);
+  const [voiceOn, setVoiceOn] = useState(false);
 
-  // --- Crime map layers -----------------------------------------------
-  const [month, setMonth] = useState(0); // 0 = all months
-  const [hourBandKey, setHourBandKey] = useState("all");
+  // --- Crime map layers --------------------------------------------------
+  const [month, setMonth] = useState(0);
+  const [hourBand, setHourBand] = useState("all");
   const [incidents, setIncidents] = useState([]);
   const [hotspots, setHotspots] = useState([]);
   const [totalIncidents, setTotalIncidents] = useState(null);
-  const [layerVisibility, setLayerVisibility] = useState({ heatmap: true, markers: false, hotspots: true });
+  const [heatLoading, setHeatLoading] = useState(false);
+  const [districtUnits, setDistrictUnits] = useState([]);
+  const [layers, setLayers] = useState({ heatmap: true, hotspots: true, markers: false, districts: false });
 
-  const HOUR_RANGES = {
-    all: null,
-    morning: [6, 11],
-    afternoon: [12, 16],
-    evening: [17, 20],
-    night: [21, 5],
-  };
+  useEffect(() => {
+    healthCheck().then(() => setApiStatus("connected")).catch(() => setApiStatus("offline"));
+    getCrimeUnits().then(setDistrictUnits).catch(() => setDistrictUnits([]));
+  }, []);
 
-  // Load crime heatmap data whenever the time filter changes
+  // Reload heatmap data when the time filter changes
   useEffect(() => {
     let cancelled = false;
-    getCrimeHeatmap({ month: month || undefined, hourRange: HOUR_RANGES[hourBandKey] })
+    const band = HOUR_BANDS.find((b) => b.key === hourBand);
+    setHeatLoading(true);
+    getCrimeHeatmap({ month: month || undefined, hourRange: band?.range ?? null })
       .then((data) => {
         if (cancelled) return;
         setIncidents(data.incidents);
@@ -68,263 +95,267 @@ export default function App() {
         setTotalIncidents(data.total_incidents);
       })
       .catch(() => {
-        if (!cancelled) {
-          setIncidents([]);
-          setHotspots([]);
-        }
+        if (cancelled) return;
+        setIncidents([]);
+        setHotspots([]);
+        setTotalIncidents(null);
+      })
+      .finally(() => {
+        if (!cancelled) setHeatLoading(false);
       });
-    return () => { cancelled = true; };
-  }, [month, hourBandKey]);
+    return () => {
+      cancelled = true;
+    };
+  }, [month, hourBand]);
 
-  // --- Picking / manual set handlers -----------------------------------
+  const route = routes[selected] || null;
+
+  // --- Drift detection ---------------------------------------------------
+  const offRoute = useMemo(() => {
+    if (!liveTracking || !live.position || !route) return false;
+    const d = distanceToPolylineMeters([live.position.lat, live.position.lon], route.geometry);
+    return d > (DRIFT_THRESHOLD_M[mode] || 100);
+  }, [liveTracking, live.position, route, mode]);
+
+  const voice = useVoiceNavigation({
+    enabled: voiceOn,
+    position: live.position,
+    route,
+    destination: end,
+    offRoute,
+  });
+
+  // --- Place handlers ----------------------------------------------------
   const handlePick = useCallback(
     (lat, lon) => {
-      if (pickingMode === "start") setStartPoint([lat, lon]);
-      else if (pickingMode === "destination") setEndPoint([lat, lon]);
-      else if (pickingMode === "waypoint") {
-        setWaypoints((wps) => [...wps, { id: waypointIdCounter++, lat, lon }]);
-      }
+      if (pickingMode === "start") setStart({ lat, lon, label: "Pinned start" });
+      else if (pickingMode === "end") setEnd({ lat, lon, label: "Pinned destination" });
+      else if (pickingMode === "waypoint") setWaypoints((w) => [...w, { id: waypointId++, lat, lon }]);
       setPickingMode(null);
     },
     [pickingMode]
   );
 
-  const handleManualSet = useCallback((kind, lat, lon) => {
-    if (kind === "start") setStartPoint([lat, lon]);
-    else if (kind === "destination") setEndPoint([lat, lon]);
+  const handleSetPlace = useCallback((kind, point) => {
+    if (kind === "start") setStart(point);
+    else setEnd(point);
   }, []);
 
-  const handleRemoveWaypoint = useCallback((index) => {
-    setWaypoints((wps) => wps.filter((_, i) => i !== index));
-  }, []);
+  function handleSwap() {
+    setStart(end);
+    setEnd(start);
+  }
 
-  const handleReorderWaypoint = useCallback((index, direction) => {
-    setWaypoints((wps) => {
-      const next = [...wps];
+  function reorderWaypoint(index, direction) {
+    setWaypoints((w) => {
       const target = index + direction;
-      if (target < 0 || target >= next.length) return wps;
+      if (target < 0 || target >= w.length) return w;
+      const next = [...w];
       [next[index], next[target]] = [next[target], next[index]];
       return next;
     });
-  }, []);
+  }
 
-  // --- Live location handlers -------------------------------------------
+  // --- Live location -----------------------------------------------------
   async function handleUseMyLocation() {
-    setLocatingOnce(true);
+    setLocating(true);
     setError(null);
     try {
       const pos = await live.getCurrentPositionOnce();
-      setStartPoint([pos.lat, pos.lon]);
+      setStart({ lat: pos.lat, lon: pos.lon, label: "My location" });
     } catch (e) {
-      setError("Couldn't get your location. Check browser location permissions.");
+      setError("Couldn't get your location. Allow location access in the browser and try again (HTTPS or localhost is required).");
     } finally {
-      setLocatingOnce(false);
+      setLocating(false);
     }
+  }
+
+  function startTracking() {
+    live.startTracking();
+    setLiveTracking(true);
   }
 
   function handleToggleLiveTracking() {
     if (liveTracking) {
       live.stopTracking();
       setLiveTracking(false);
-      setDriftedOffRoute(false);
+      setVoiceOn(false);
     } else {
-      live.startTracking();
-      setLiveTracking(true);
+      startTracking();
     }
   }
 
-  // Off-route drift detection while live-tracking with an active route
-  useEffect(() => {
-    if (!liveTracking || !live.position || routes.length === 0) {
-      setDriftedOffRoute(false);
+  function handleToggleVoice() {
+    if (voiceOn) {
+      setVoiceOn(false);
       return;
     }
-    const topRoute = routes[0];
-    const dist = distanceToPolylineMeters([live.position.lat, live.position.lon], topRoute.geometry);
-    const threshold = DRIFT_THRESHOLD_M[mode] || 100;
-    setDriftedOffRoute(dist > threshold);
-  }, [live.position, liveTracking, routes, mode]);
-
-  async function handleRecalculateFromCurrentLocation() {
-    if (!live.position) return;
-    setStartPoint([live.position.lat, live.position.lon]);
-    await runSearch({ overrideStart: [live.position.lat, live.position.lon] });
+    if (!voice.supported) {
+      setError("Voice guidance is not supported in this browser. Please use Chrome or Edge.");
+      return;
+    }
+    if (!route) {
+      setError("Find a route first, then turn on voice guidance.");
+      return;
+    }
+    setError(null);
+    if (!liveTracking) startTracking(); // guidance needs your live position
+    setVoiceOn(true);
   }
 
-  // --- Search -------------------------------------------------------
-  function handleWeightChange(key, value) {
-    if (key === "aqi") setWeightAqi(value);
-    if (key === "crime") setWeightCrime(value);
-    if (key === "traffic") setWeightTraffic(value);
-  }
-
-  async function runSearch({ overrideStart } = {}) {
-    const s = overrideStart || startPoint;
-    if (!s || !endPoint) return;
+  // --- Search ------------------------------------------------------------
+  async function runSearch(overrideStart) {
+    const s = overrideStart || start;
+    if (!s || !end) return;
     setLoading(true);
     setError(null);
     try {
       const data = await getSafeRoutes({
-        startLat: s[0],
-        startLon: s[1],
-        endLat: endPoint[0],
-        endLon: endPoint[1],
-        waypoints,
+        start_lat: s.lat,
+        start_lon: s.lon,
+        end_lat: end.lat,
+        end_lon: end.lon,
+        waypoints: waypoints.map((w) => ({ lat: w.lat, lon: w.lon })),
         mode,
-        weightAqi: weightAqi / 100,
-        weightCrime: weightCrime / 100,
-        weightTraffic: weightTraffic / 100,
+        weight_aqi: weights.aqi / 100,
+        weight_crime: weights.crime / 100,
+        weight_traffic: weights.traffic / 100,
         ranking,
       });
-      setRoutes(data.routes);
-      setDriftedOffRoute(false);
+      const list = data.routes || [];
+      setRoutes(list);
+      setSelected(0);
+      if (!list.length) setError("No route candidates were returned.");
+      else setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 80);
     } catch (e) {
-      if (e.code === "ECONNABORTED") {
-        setError("The request timed out. Long routes can take a while - the server may be waking up. Please try again in a moment.");
-      } else if (e.response?.status === 504) {
-        setError(e.response.data?.detail || "Route analysis timed out. Please try again.");
-      } else if (e.response) {
-        setError(`Server error (${e.response.status}): ${e.response.data?.detail || "please try again."}`);
-      } else {
-        setError("Can't reach the backend. Check your internet connection or that the server is running.");
-      }
+      setError(explainError(e));
       setRoutes([]);
     } finally {
       setLoading(false);
     }
   }
 
-  function handleToggleLayer(key) {
-    setLayerVisibility((v) => ({ ...v, [key]: !v[key] }));
+  function handleRecalculate() {
+    if (!live.position) return;
+    const here = { lat: live.position.lat, lon: live.position.lon, label: "My location" };
+    setStart(here);
+    runSearch(here);
   }
 
-  const topRoute = routes.length > 0 ? routes[0] : null;
-
-  const voice = useVoiceNavigation({
-    enabled: voiceNavigation,
-    position: live.position,
-    route: topRoute,
-    destination: endPoint,
-  });
-
-  function handleToggleVoiceNavigation() {
-    if (!voice.supported) {
-      setError("Voice navigation is not supported in this browser. Please use Chrome or Edge.");
-      return;
-    }
-
-    if (!liveTracking) {
-      setError("Turn on Live tracking first to use voice navigation.");
-      return;
-    }
-
-    if (!topRoute) {
-      setError("Find a route first, then start voice navigation.");
-      return;
-    }
-
-    setError(null);
-    setVoiceNavigation((current) => !current);
-  }
+  const statusText = apiStatus === "connected" ? "API connected" : apiStatus === "offline" ? "API offline" : "Connecting…";
 
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div className="app-header-brand">
-          <span className="app-logo">🛡️</span>
-          <div>
-            <h1>RouteSafe AI</h1>
-            <p>Multi-modal route recommendations fusing air quality, traffic, and crime risk.</p>
-          </div>
+    <div className="app">
+      <header className="topbar">
+        <div className="brand-icon" aria-hidden="true">✦</div>
+        <div className="brand-text">
+          <h1>RouteSafe <em>AI</em></h1>
+          <p>Route planning with air quality, crime and traffic indicators for Tamil Nadu</p>
         </div>
+        <span className={`status ${apiStatus}`} role="status">{statusText}</span>
       </header>
 
-      <KpiBar topRoute={topRoute} />
-
-      <div className="app-body">
-        <aside className="sidebar glass-panel">
-          <SearchPanel
-            startPoint={startPoint}
-            endPoint={endPoint}
-            waypoints={waypoints}
-            pickingMode={pickingMode}
-            onSetPickingMode={setPickingMode}
-            onManualSet={handleManualSet}
-            onRemoveWaypoint={handleRemoveWaypoint}
-            onReorderWaypoint={handleReorderWaypoint}
-            onUseMyLocation={handleUseMyLocation}
-            locating={locatingOnce}
-            liveTracking={liveTracking}
-            onToggleLiveTracking={handleToggleLiveTracking}
-            mode={mode}
-            onModeChange={setMode}
-            ranking={ranking}
-            onRankingChange={setRanking}
-            weightAqi={weightAqi}
-            weightCrime={weightCrime}
-            weightTraffic={weightTraffic}
-            onWeightChange={handleWeightChange}
-            onSearch={runSearch}
-            loading={loading}
-          />
-
-          {live.error && liveTracking && <div className="error-banner">{live.error}</div>}
-          {error && <div className="error-banner">{error}</div>}
-
-          <div className="voice-navigation-panel">
-            <div>
-              <strong>🔊 Voice Navigation</strong>
-              <p>{voice.status}</p>
-            </div>
-            <button
-              type="button"
-              className={voiceNavigation ? "voice-nav-btn active" : "voice-nav-btn"}
-              onClick={handleToggleVoiceNavigation}
-            >
-              {voiceNavigation ? "Stop Voice" : "Start Voice"}
-            </button>
+      <div className="layout">
+        <aside className="sidebar">
+          <div className="sidebar-plan">
+            <SearchPanel
+              start={start}
+              end={end}
+              waypoints={waypoints}
+              pickingMode={pickingMode}
+              onSetPickingMode={setPickingMode}
+              onSetPlace={handleSetPlace}
+              onSwap={handleSwap}
+              onRemoveWaypoint={(i) => setWaypoints((w) => w.filter((_, j) => j !== i))}
+              onClearWaypoints={() => setWaypoints([])}
+              onReorderWaypoint={reorderWaypoint}
+              onUseMyLocation={handleUseMyLocation}
+              locating={locating}
+              liveTracking={liveTracking}
+              onToggleLiveTracking={handleToggleLiveTracking}
+              voiceNavigation={voiceOn}
+              onToggleVoiceNavigation={handleToggleVoice}
+              voiceStatus={voice.status}
+              mode={mode}
+              onModeChange={setMode}
+              ranking={ranking}
+              onRankingChange={setRanking}
+              weights={weights}
+              onWeightChange={(key, value) => setWeights((w) => rebalance(w, key, value))}
+              onSearch={() => runSearch()}
+              loading={loading}
+              error={error || (liveTracking ? live.error : null)}
+            />
           </div>
 
-          <RouteCards routes={routes} />
+          <div className="sidebar-results" ref={resultsRef}>
+            <div className="results-head">
+              <div>
+                <span className="eyebrow">ROUTE ANALYSIS</span>
+                <h2>{routes.length ? `${routes.length} route option${routes.length === 1 ? "" : "s"}` : "Your route options"}</h2>
+              </div>
+              {routes.length > 0 && <span className="hint">Tap a card or a line on the map</span>}
+            </div>
+            <RouteCards routes={routes} selectedIndex={selected} onSelect={setSelected} currentMode={mode} />
+            <p className="disclaimer">
+              Decision support only. Crime index: Tamil Nadu Police crime rates per lakh population (IPC, violent and
+              property crime) by district / city commissionerate, scaled 0–1. Street-level detail, heatmap and hotspots
+              are a rate-anchored simulation, not incident records. *AQI comes from OpenAQ where a station is nearby,
+              otherwise a default; traffic is not live; walking and two-wheeler times are estimates. Not validated
+              emergency guidance.
+            </p>
+          </div>
         </aside>
 
-        <main className="map-area">
-          {driftedOffRoute && (
-            <div className="drift-banner glass-panel">
-              You've drifted off the recommended route.
-              <button onClick={handleRecalculateFromCurrentLocation}>Recalculate from here</button>
-            </div>
-          )}
+        <section className="workspace">
+          <KpiBar route={route} />
 
-          <RouteMap
-            routes={routes}
-            startPoint={startPoint}
-            endPoint={endPoint}
-            waypoints={waypoints}
-            pickingMode={pickingMode}
-            onPick={handlePick}
-            onDragStart={(lat, lon) => setStartPoint([lat, lon])}
-            onDragEnd={(lat, lon) => setEndPoint([lat, lon])}
-            onDragWaypoint={(i, lat, lon) =>
-              setWaypoints((wps) => wps.map((wp, idx) => (idx === i ? { ...wp, lat, lon } : wp)))
-            }
-            incidents={incidents}
-            hotspots={hotspots}
-            layerVisibility={layerVisibility}
-            liveLocation={live.position}
-            followLive={liveTracking}
-          />
+          <div className="map-wrap">
+            <RouteMap
+              routes={routes}
+              selectedIndex={selected}
+              onSelectRoute={setSelected}
+              start={start}
+              end={end}
+              waypoints={waypoints}
+              pickingMode={pickingMode}
+              onPick={handlePick}
+              onDragStart={(lat, lon) => setStart({ lat, lon, label: "Pinned start" })}
+              onDragEnd={(lat, lon) => setEnd({ lat, lon, label: "Pinned destination" })}
+              onDragWaypoint={(i, lat, lon) => setWaypoints((w) => w.map((p, j) => (j === i ? { ...p, lat, lon } : p)))}
+              incidents={incidents}
+              hotspots={hotspots}
+              districtUnits={districtUnits}
+              layerVisibility={layers}
+              liveLocation={live.position}
+              followLive={liveTracking}
+            />
 
-          <MapLegend layers={layerVisibility} onToggle={handleToggleLayer} />
+            <LayerPanel layers={layers} onToggle={(k) => setLayers((l) => ({ ...l, [k]: !l[k] }))} loading={heatLoading} />
+
+            {pickingMode && (
+              <div className="map-hint">
+                Click the map to set {pickingMode === "waypoint" ? "an intermediate stop" : pickingMode === "start" ? "the start" : "the destination"}
+                <button type="button" onClick={() => setPickingMode(null)}>Cancel</button>
+              </div>
+            )}
+
+            {offRoute && (
+              <div className="drift-banner" role="alert">
+                You've drifted off the selected route.
+                <button type="button" onClick={handleRecalculate}>Recalculate from here</button>
+              </div>
+            )}
+          </div>
 
           <TimeSlider
             month={month}
             onMonthChange={setMonth}
-            hourBandKey={hourBandKey}
-            onHourBandChange={setHourBandKey}
+            hourBandKey={hourBand}
+            onHourBandChange={setHourBand}
             totalIncidents={totalIncidents}
           />
-        </main>
+        </section>
       </div>
     </div>
   );

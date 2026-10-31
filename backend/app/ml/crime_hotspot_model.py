@@ -1,43 +1,36 @@
 """
-Crime Hotspot Model — Tamil Nadu Edition.
+Crime Hotspot Model - Tamil Nadu edition.
 
-HONEST DATA NOTE (read this before your demo/viva):
-No free, public, live, incident-level ("lat/lon per crime") crime API
-exists for Tamil Nadu, or for India generally, at the time of writing.
-What genuinely exists is real, sourced, DISTRICT-LEVEL annual crime-rate
-data published by Tamil Nadu Police via the Greater Chennai Police open
-data portal (data.opencity.in). See app/data/tn_crime_data.py for the
-full sourced table.
+DATA NOTE (read this before your demo/viva):
+No free, public, live, incident-level ("lat/lon per crime") crime API exists
+for Tamil Nadu, or for India generally. What exists is district-level annual
+crime-rate data from Tamil Nadu Police, supplied here as
+app/data/TN_district_crime_rates_2016_2023.csv (see app/data/tn_crime_data.py).
 
 Two layers, always kept distinguishable in the API response:
 
-  LAYER A — District-Level Risk Score (100% real data)
-      Used for route risk scoring (get_risk_for_point / get_district_risk_score).
+  LAYER A - District-level risk score (100% CSV data)
+      crime_index (0..1) per police unit from IPC, violent and property crime
+      rates per lakh population. Points outside Tamil Nadu get no score.
 
-  LAYER B — Statistically-Anchored Synthetic Hotspots
-      Individual incident points (with crime type, severity, and a
-      date/time — used for the heatmap, cluster markers, and hotspot
-      boundary polygons on the map) are synthetic, but their district-
-      level DENSITY and TYPE MIX are anchored to Layer A's real rates.
-      This must be disclosed as "rate-anchored simulation" — it is not
-      real incident data. The map UI carries this disclosure via the
-      `data_honesty_note` field returned by the /api/crime/heatmap
-      endpoint.
+  LAYER B - Statistically-anchored synthetic hotspots
+      Individual incident points (crime type, severity, date/time - used for
+      the heatmap, cluster markers and hotspot polygons, and for the
+      time-of-day part of route scoring) are synthetic, but each unit's point
+      DENSITY and theft/robbery/burglary MIX are anchored to that unit's CSV
+      rates. This is a rate-anchored simulation, not incident records, and
+      the API says so via `data_honesty_note`.
 """
 
 import numpy as np
 import pandas as pd
 from sklearn.cluster import DBSCAN
 from scipy.spatial import ConvexHull, QhullError
-from math import radians, sin, cos, sqrt, atan2
 from datetime import datetime, timedelta
 
-from app.data.tn_crime_data import (
-    TN_DISTRICT_CRIME_RATES,
-    TN_DISTRICT_COORDINATES,
-    get_composite_crime_rate,
-    MAX_COMPOSITE_RATE,
-)
+from app.config import settings
+from app.data import tn_crime_data as crime_data
+from app.data.tn_crime_data import haversine_km  # re-exported for callers
 
 CRIME_TYPES = ["Theft", "Robbery", "Burglary"]
 
@@ -51,31 +44,25 @@ SEVERITY_WEIGHT = {"Low": 0.35, "Medium": 0.6, "High": 1.0}  # for heatmap inten
 # LAYER A — Real district-level risk scoring
 # ---------------------------------------------------------------------
 
-def haversine_km(lat1, lon1, lat2, lon2):
-    R = 6371.0
-    dlat, dlon = radians(lat2 - lat1), radians(lon2 - lon1)
-    a = sin(dlat / 2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) ** 2
-    return R * 2 * atan2(sqrt(a), sqrt(1 - a))
-
-
-def get_nearest_district(lat: float, lon: float) -> str:
-    best_district, best_dist = None, float("inf")
-    for district, (d_lat, d_lon) in TN_DISTRICT_COORDINATES.items():
-        dist = haversine_km(lat, lon, d_lat, d_lon)
-        if dist < best_dist:
-            best_dist, best_district = dist, district
-    return best_district
+def get_nearest_district(lat: float, lon: float):
+    """Police unit containing this point, or None outside Tamil Nadu coverage."""
+    return crime_data.assign_unit(lat, lon)
 
 
 def get_district_risk_score(lat: float, lon: float) -> dict:
-    district = get_nearest_district(lat, lon)
-    composite = get_composite_crime_rate(district)
-    normalized = round((composite / MAX_COMPOSITE_RATE) * 100, 1) if MAX_COMPOSITE_RATE else 0.0
+    """CSV-based district risk for a point. risk_score is 0-100, or None if no data."""
+    unit_name = crime_data.assign_unit(lat, lon)
+    unit = crime_data.get_unit(unit_name) if unit_name else None
+    if not unit:
+        return {"district": None, "risk_score": None, "crime_index": None,
+                "layer": "no_data_outside_tn"}
     return {
-        "district": district,
-        "composite_rate": composite,
-        "risk_score": normalized,
-        "layer": "real_district_data",
+        "district": unit_name,
+        "risk_score": round(unit["crime_index"] * 100, 1),
+        "crime_index": unit["crime_index"],
+        "year": unit["year"],
+        "ipc_crime_rate": unit["ipc_crime_rate"],
+        "layer": "csv_district_data",
     }
 
 
@@ -85,11 +72,11 @@ def get_district_risk_score(lat: float, lon: float) -> dict:
 
 def _crime_type_weights(district: str):
     """Type mix proportional to that district's REAL per-category rates."""
-    rates = TN_DISTRICT_CRIME_RATES.get(district, {})
+    rates = crime_data.get_unit(district) or {}
     weights = np.array([
-        rates.get("theft_rate", 1.0),
-        rates.get("robbery_rate", 1.0),
-        rates.get("burglary_rate", 1.0),
+        rates.get("theft_rate") or 1.0,
+        rates.get("robbery_rate") or 1.0,
+        rates.get("burglary_rate") or 1.0,
     ], dtype=float)
     weights = np.clip(weights, 0.1, None)
     return weights / weights.sum()
@@ -116,9 +103,9 @@ def _night_weighted_hour_probabilities():
 
 def generate_rate_anchored_synthetic_points(points_per_max_rate=250, days_back=365, seed=42) -> pd.DataFrame:
     """
-    Generates synthetic incident points district-by-district, density
-    proportional to each district's REAL composite crime rate, crime-type
-    mix proportional to that district's real theft/robbery/burglary split,
+    Generates synthetic incident points unit-by-unit, density proportional to
+    each unit's CSV crime_index, crime-type mix proportional to that unit's
+    CSV theft/robbery/burglary rates,
     and a date spread across the past `days_back` days (default: 1 year,
     to power the time slider) with a night-weighted hour distribution.
     """
@@ -127,9 +114,12 @@ def generate_rate_anchored_synthetic_points(points_per_max_rate=250, days_back=3
     now = datetime.utcnow()
     incident_id = 0
 
-    for district, (d_lat, d_lon) in TN_DISTRICT_COORDINATES.items():
-        composite = get_composite_crime_rate(district)
-        n_points = max(3, int((composite / MAX_COMPOSITE_RATE) * points_per_max_rate))
+    crime_data.load()
+    for district, (d_lat, d_lon) in crime_data.UNIT_COORDINATES.items():
+        unit = crime_data.get_unit(district)
+        if not unit:
+            continue  # unit has no complete CSV row for the reference year
+        n_points = max(3, int(unit["crime_index"] * points_per_max_rate))
 
         n_subclusters = rng.integers(2, 4)
         subcluster_centers = [
@@ -233,8 +223,21 @@ def get_street_level_risk(hotspot_grid: pd.DataFrame, lat: float, lon: float, ho
 
 
 def get_risk_for_point(hotspot_grid: pd.DataFrame, lat: float, lon: float, hour: int,
-                        district_weight: float = 0.6, street_weight: float = 0.4) -> dict:
+                        district_weight: float = None, street_weight: float = None) -> dict:
+    """
+    Blended 0-100 crime risk for a point. risk_score is None outside Tamil Nadu
+    (no data - the caller must not treat that as "safe").
+    """
+    if street_weight is None:
+        street_weight = settings.STREET_LAYER_WEIGHT
+    if district_weight is None:
+        district_weight = 1.0 - street_weight
+
     layer_a = get_district_risk_score(lat, lon)
+    if layer_a["risk_score"] is None:
+        return {"risk_score": None, "district": None, "district_real_score": None,
+                "street_level_synthetic_score": None, "crime_index": None}
+
     layer_b_score = get_street_level_risk(hotspot_grid, lat, lon, hour)
     blended = round(district_weight * layer_a["risk_score"] + street_weight * layer_b_score, 1)
     return {
@@ -242,6 +245,9 @@ def get_risk_for_point(hotspot_grid: pd.DataFrame, lat: float, lon: float, hour:
         "district": layer_a["district"],
         "district_real_score": layer_a["risk_score"],
         "street_level_synthetic_score": layer_b_score,
+        "crime_index": layer_a["crime_index"],
+        "year": layer_a["year"],
+        "ipc_crime_rate": layer_a["ipc_crime_rate"],
     }
 
 

@@ -1,32 +1,40 @@
 import React from "react";
+import { arrivalClock, formatDuration } from "../utils/geo";
 
-function Kpi({ label, value, accent }) {
+const MODE_ICON = { car: "🚗", two_wheeler: "🏍️", walking: "🚶" };
+
+function Kpi({ label, value, sub, accent }) {
   return (
-    <div className={`kpi-card ${accent ? `kpi-accent-${accent}` : ""}`}>
-      <div className="kpi-value">{value}</div>
-      <div className="kpi-label">{label}</div>
+    <div className={`kpi ${accent ? `kpi-${accent}` : ""}`}>
+      <small>{label}</small>
+      <b>{value}</b>
+      {sub && <span>{sub}</span>}
     </div>
   );
 }
 
-export default function KpiBar({ topRoute }) {
-  if (!topRoute) {
+export default function KpiBar({ route }) {
+  if (!route) {
     return (
-      <div className="kpi-bar kpi-bar-empty">
-        <span>Pin a start and destination, then find a safe route to see live risk KPIs here.</span>
+      <div className="kpi-bar kpi-empty">
+        Choose a start and destination, then press <b>Find routes</b> to see distance, time, air quality and crime for
+        each option.
       </div>
     );
   }
-
-  const scoreAccent = topRoute.composite_score < 33 ? "good" : topRoute.composite_score < 66 ? "warn" : "bad";
-
+  const score = route.composite_score;
+  const accent = score < 33 ? "good" : score < 66 ? "warn" : "bad";
   return (
     <div className="kpi-bar">
-      <Kpi label="Risk Score" value={`${topRoute.composite_score}/100`} accent={scoreAccent} />
-      <Kpi label="Distance" value={`${topRoute.distance_km} km`} />
-      <Kpi label="Duration" value={`${topRoute.duration_min} min`} />
-      <Kpi label="Avg AQI" value={topRoute.avg_aqi} />
-      <Kpi label="Peak Crime Risk" value={`${topRoute.max_crime_score}/100`} />
+      <Kpi label="RISK SCORE" value={`${Number(score).toFixed(1)}`} sub="out of 100, lower is better" accent={accent} />
+      <Kpi label="DISTANCE" value={`${route.distance_km} km`} />
+      <Kpi
+        label={`TRAVEL TIME ${MODE_ICON[route.mode] || ""}`}
+        value={formatDuration(route.duration_min)}
+        sub={`arrive ~${arrivalClock(route.duration_min)}`}
+      />
+      <Kpi label="AVG AQI" value={route.avg_aqi ?? "-"} />
+      <Kpi label="PEAK CRIME INDEX" value={Number(route.max_crime_score ?? 0).toFixed(2)} sub="0 low – 1 high" />
     </div>
   );
 }
